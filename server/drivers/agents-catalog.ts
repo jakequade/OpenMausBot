@@ -253,6 +253,16 @@ const toolDefinitions = (externalRuntime: boolean) => [
     }, required: ["bot_ids", "message", "request_key"] },
   },
   {
+    name: "handoff_bot",
+    description: "Transfer ownership of one self-contained job to one reachable teammate in a fresh thread. The recipient gets only your brief plus a link to this source conversation; the link grants no access. You receive a durable receipt linking their thread, then stop: their results, failures and questions stay there and never resume you. Use the same request_key for an identical retry; it returns the original thread without running twice. Use coordinate_bots instead when you need results returned here. Do not hand off without a complete, task-agnostic brief.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      bot_id: { type: "string", description: "Exactly one reachable teammate id from list_bots or list_room_targets; a unique teammate name also resolves." },
+      brief: { type: "string", minLength: 1, maxLength: 20_000, description: "Complete freeform instructions and context needed to continue without this transcript." },
+      request_key: { type: "string", description: "A short unique handoff key. Reuse it only for an identical retry." },
+      title: { type: "string", description: "Optional one-line recipient thread title, at most 80 characters. Defaults to the brief's first line." },
+    }, required: ["bot_id", "brief", "request_key"] },
+  },
+  {
     name: "list_bots",
     description:
       "List the other bots (agents) you may contact in your own team and any additional teams the owner has explicitly allowed you to coordinate, with their team, model and current status. Call this to discover exact teammate IDs before assigning work or requesting advice through your available coordination tools.",
@@ -812,7 +822,7 @@ const VOICE_TOOL_NAMES = new Set(["send_voice_note"]);
 // One teamwork path in room turns; keep all unrelated integrations available.
 // Ordinary direct chats use this same bounded coordinator. Goal-owned turns
 // retain their independent loop and cannot start a second coordinator.
-const ROOM_ONLY_TOOLS = new Set(["list_room_targets", "coordinate_bots"]);
+const ROOM_ONLY_TOOLS = new Set(["list_room_targets", "coordinate_bots", "handoff_bot"]);
 const ROOM_REPLACED_TOOLS = new Set(["ask_bot", "delegate_bot", "check_delegation", "wait_delegation", "start_thread", "send_to_thread", "wait_thread"]);
 const EXTERNAL_TOOL_NAMES = new Set(["list_bots", "ask_bot", "delegate_bot", "check_delegation", "wait_delegation"]);
 const WATCHER_TOOL_NAMES = new Set(["create_options_card"]);

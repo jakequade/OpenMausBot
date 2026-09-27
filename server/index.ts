@@ -32,6 +32,7 @@ import {
   type ApprovalMode,
 } from "../shared/approval-mode.ts";
 import { escapeAttribute } from "../src/lib/composer-attachments.ts";
+import { threadRefUrl } from "../src/lib/thread-refs.ts";
 import {
   CREDENTIAL_TARGETS,
   credentialResumeOutcome,
@@ -269,7 +270,7 @@ import { computerKindForResource, ManagedDesktopPolicy } from "./managed-policy.
 import { hostedModelPolicy, HOSTED_MODEL_POLICY_HEADER, HOSTED_PROVIDER_SETTINGS_ERROR } from "./hosted-models.ts";
 import type { ProviderInstance } from "./contracts.ts";
 import { selectDefaultModelSelection, withNewBotEffort } from "./default-model-selection.ts";
-import { cancelPeerApprovalsFor, cancelPeerApprovalsForThread, dismissStalePeerCards, peerApprovalFailure, requestPeerApproval, resolvePeerComms, type ApprovalBus } from "./peer-approval.ts";
+import { cancelPeerApprovalsFor, cancelPeerApprovalsForThread, dismissStalePeerCards, peerApprovalFailure, requestPeerApproval, resolvePeerComms, type ApprovalBus, type PeerApprovalOutcome } from "./peer-approval.ts";
 import { peerDeliveryReceipt, type PeerDeliveryReceipt } from "./peer-delivery.ts";
 import { peerProvenanceNote, withPeerProvenance } from "./peer-provenance.ts";
 import { decideRoomPost, emptyRoomPostBudget, type RoomPostAttempt, type RoomPostBudget } from "./room-post-budget.ts";
@@ -280,6 +281,7 @@ import {
   roomResponders,
   sectionKey,
   Store,
+  titleFromMessage,
   titleFromLlm,
   type BotRecord,
   type GroupDefaultResponder,
@@ -6547,7 +6549,10 @@ const delegationWatch = new Map<string, {
   routineRunId?: string;
   /** when the delegated turn was dispatched — elapsed time for status checks */
   startedAtMs?: number;
+  /** Ownership moved to the recipient thread; never mirror or wake source. */
+  oneWay?: boolean;
 }>();
+const handoffApprovals = new Map<string, { payloadHash: string; promise: Promise<PeerApprovalOutcome> }>();
 
 // Peer wake: when a delegated reply lands, resume the source bot so it can
 // fold the result in and answer the user instead of sitting idle. Mirrors
@@ -6640,6 +6645,9 @@ function reportIncident(input: { kind: IncidentKind; bot: BotRecord; threadId: s
   const task = store.taskByThread(bot.id, threadId);
   // A thread another bot opened and is watching is that bot's to handle:
   // the delegator is woken with the failure already (wakeDelegationSource).
+  // Peer-opened work reports through its delegation finalizer. For one-way
+  // handoffs that finalizer writes into this recipient thread; escalating to
+  // its Chief could otherwise resume the original sender automatically.
   if (task?.openedBy?.delegationId || delegationWatch.has(threadId) || roomHandoffs.activeDirect(threadId)) return;
   const group = store.groupByThread(threadId);
   const incident: Incident = {
@@ -6891,7 +6899,19 @@ function finalizeDelegationWatch(
       toBotName: store.bot(watched.toBotId)?.name ?? watched.toBotId,
       status: ok ? "done" : "failed",
       result: ok ? reply : failureName,
+      ...(watched.oneWay ? { oneWay: true } : {}),
+      ...(watched.oneWay ? { targetThreadId: threadId } : {}),
     });
+  }
+  if (watched.oneWay) {
+    if (!ok && store.taskByThread(watched.toBotId, threadId)) {
+      store.appendMessage(threadId, {
+        role: "bot",
+        kind: "activity",
+        tool: { name: `Handoff failed — ${failureName}`, ok: false },
+      });
+    }
+    return true;
   }
   let channel: GroupRecord | undefined = watched.channelId ? store.group(watched.channelId) : undefined;
   let terminalThreadId: string | undefined = watched.sourceThreadId;
@@ -7023,7 +7043,7 @@ bus.subscribe((event: RuntimeEvent) => {
 /** How a drained delegation becomes a real turn on the target. Shared by
  * the settle-time drain and the boot-time drain of what a previous process
  * left queued. */
-const runDelegatedTurn: Parameters<typeof drainDelegations>[3] = (toBotId, rawText, commsDepth, sourceThreadId, channel, taskId, sourceBotId, openedThreadId) => {
+const runDelegatedTurn: Parameters<typeof drainDelegations>[3] = (toBotId, rawText, commsDepth, sourceThreadId, channel, taskId, sourceBotId, openedThreadId, oneWay) => {
     // startTurn REJECTS on an ordinary condition — busy target, deleted bot,
     // unavailable provider. Unhandled, that rejection is fatal to the
     // harness (Node's default), which in the packaged app kills the server
@@ -7044,7 +7064,7 @@ const runDelegatedTurn: Parameters<typeof drainDelegations>[3] = (toBotId, rawTe
       ? { botId: opener.id, name: opener.name, unattended: unattended || undefined }
       : undefined;
     const text = openedThreadId && opener
-      ? withPeerProvenance(rawText, { botName: opener.name, delivery: "start_thread", unattended })
+      ? withPeerProvenance(rawText, { botName: opener.name, delivery: oneWay ? "handoff_bot" : "start_thread", unattended })
       : rawText;
     if (targetThreadId) {
       delegationWatch.set(targetThreadId, {
@@ -7056,6 +7076,7 @@ const runDelegatedTurn: Parameters<typeof drainDelegations>[3] = (toBotId, rawTe
         sourceBotId,
         routineRunId: activeRoutineRunForThread(sourceThreadId)?.id,
         startedAtMs: Date.now(),
+        ...(oneWay ? { oneWay: true } : {}),
       });
     }
     let failureReported = false;
@@ -7144,7 +7165,10 @@ bus.subscribe((event: RuntimeEvent) => {
   // firing it later: the user who hit Stop does not expect the delegations
   // that turn queued to run anyway, minutes later, on an unrelated turn.
   if (!event.ok) discardDelegations(commsBus, event.threadId);
-  else drainThreadDelegations(event.threadId);
+  // discardDelegations removes callback work after a failed/stopped source
+  // but keeps already-accepted ownership transfers. Those no longer belong
+  // to the source turn, so dispatch them even when that turn failed.
+  drainThreadDelegations(event.threadId);
   // A settling bot frees itself as a delegation TARGET too: handoffs that
   // found it busy earlier were kept queued — waiting until it's free or the
   // 24-hour expiry, not counting retries — on their own source threads, and
@@ -14675,6 +14699,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             too_deep: "delegation chains are limited to one hop — do this one yourself",
             no_target: "no such bot",
             too_many: "too many delegations queued on this turn — finish some first",
+            conflict: "that delivery id already belongs to different work",
+            persistence_failed: "the delegation queue could not be saved",
           };
           const refusal = said[queued.result === "ok" ? "no_target" : queued.result];
           return json(res, 200, { error: refusal, receipt: peerDeliveryReceipt({
@@ -14716,7 +14742,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
               : "the teammate's turn runs after your current turn finishes" }),
         });
       }
-      if (path === "/api/internal/room-targets" || path === "/api/internal/coordinate-bots") {
+      if (path === "/api/internal/room-targets" || path === "/api/internal/coordinate-bots" || path === "/api/internal/handoff-bot") {
         const source = store.groupByThread(internalCapability.threadId);
         if (!internalCapability.roomCoordination || (source && (source.dm || !source.memberIds.includes(internalSender.id)))) {
           return json(res, 403, { error: "Coordination requires an active chat turn. Finish together already manages its own teammate turns." });
@@ -14734,6 +14760,144 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           return json(res, 200, { currentRoom: source ? { id: source.id, name: source.name, workingFolder: source.cwd || null } : null,
             bots: reachablePeers(store.bots, internalSender).map(bot => ({ id: bot.id, name: bot.name, title: bot.title, section: bot.section, busy: bot.busy })),
             rooms, note: "Without group_id: use this room when in a room, otherwise your standing conversation with that teammate — every assignment you send it continues the same thread, so write as if it remembers the last one. Each bot uses its own environment and permissions. Files are not transferred: pass absolute paths only when accessible to the recipient, otherwise pass the content." });
+        }
+        if (method === "POST" && path === "/api/internal/handoff-bot") {
+          const parsed = z.object({
+            toBotId: z.string().min(1).max(128),
+            brief: z.string().trim().min(1).max(20_000),
+            requestKey: z.string().regex(/^[\w-]{1,100}$/),
+            title: z.string().trim().min(1).max(80).refine(fitsOnOneLine).optional(),
+          }).safeParse(await readInternalBody());
+          if (!parsed.success) return json(res, 400, { error: "Provide one botId, a complete brief (1-20000 characters), a short requestKey (letters, digits, underscores or hyphens), and an optional one-line title of at most 80 characters." });
+          const resolved = resolveTeammate(store.bots, internalSender, parsed.data.toBotId);
+          if ("error" in resolved) return json(res, 403, { error: resolved.error });
+          const target = store.bot(resolved.id);
+          if (!target || target.hidden) return json(res, 404, { error: "that teammate is no longer available" });
+          if (target.id === internalSender.id) return json(res, 403, { error: "Choose a teammate, not yourself" });
+          if (!canAccessTeam(internalSender, target.section) || !peerAllowed(internalSender, target)) {
+            return json(res, 403, { error: `that bot is not reachable. ${PEER_ACCESS_HELP}` });
+          }
+          const title = parsed.data.title ?? titleFromMessage(parsed.data.brief);
+          const payloadHash = createHash("sha256").update(JSON.stringify({ targetId: target.id, title, brief: parsed.data.brief })).digest("hex");
+          const handoffId = `handoff-${createHash("sha256").update(JSON.stringify([
+            internalSender.id, address.threadId, parsed.data.requestKey,
+          ])).digest("hex").slice(0, 40)}`;
+          const found = store.bots.flatMap(bot => (bot.tasks ?? []).map(task => ({ bot, task }))).find(({ task }) =>
+            task.handoff?.sourceBotId === internalSender.id && task.handoff.sourceThreadId === address.threadId &&
+            task.handoff.requestKey === parsed.data.requestKey);
+          if (found && (found.bot.id !== target.id || found.task.handoff?.payloadHash !== payloadHash)) {
+            return json(res, 409, { error: "request_key was already used for a different handoff" });
+          }
+          const priorPending = pendingDelegationInfo(handoffId);
+          const priorReceipt = findDelegationReceipt(handoffId);
+          if (!found && (priorPending || priorReceipt?.oneWay)) {
+            const priorBotId = priorPending?.toBotId ?? priorReceipt?.toBotId;
+            if (priorBotId !== target.id) {
+              return json(res, 409, { error: "request_key was already used for a different handoff" });
+            }
+            const priorThreadId = priorPending?.targetThreadId ?? priorReceipt?.targetThreadId;
+            return json(res, 410, {
+              error: priorThreadId
+                ? "the original recipient thread was deleted; use a new request_key for new work"
+                : "the original handoff receipt predates retryable thread identity; use a new request_key",
+              ...(priorThreadId ? { thread: { botId: target.id, threadId: priorThreadId,
+                url: threadRefUrl({ botId: target.id, threadId: priorThreadId }) } } : {}),
+            });
+          }
+          const wasAccepted = (task: TaskRecord) => Boolean(pendingDelegationInfo(handoffId) || findDelegationReceipt(handoffId) ||
+            [...delegationWatch.values()].some(watch => watch.taskId === handoffId) || store.messagesFor(task.threadId)
+              .some(message => message.role === "user" && message.peerAsk?.botId === task.handoff?.sourceBotId));
+          const receipt = (task: TaskRecord, duplicate: boolean) => ({
+            accepted: true,
+            duplicate,
+            message: duplicate
+              ? "Identical retry: the original recipient thread and execution stand. The sender will not be resumed."
+              : "Handoff accepted. Ownership moved to the recipient thread; results, failures and questions stay there and will not resume the sender.",
+            thread: { botId: target.id, threadId: task.threadId, title: task.title,
+              url: threadRefUrl({ botId: target.id, threadId: task.threadId }) },
+          });
+          if (found && wasAccepted(found.task)) return json(res, 200, receipt(found.task, true));
+          if (!found && internalCapability.openedThreads >= MAX_THREADS_OPENED_PER_TURN) {
+            return json(res, 429, { error: `you can open at most ${MAX_THREADS_OPENED_PER_TURN} threads in one turn` });
+          }
+          if (peerReviewRequired(internalSender, address.threadId)) {
+            const underway = handoffApprovals.get(handoffId);
+            if (underway && underway.payloadHash !== payloadHash) {
+              return json(res, 409, { error: "request_key is awaiting approval for a different handoff" });
+            }
+            const approval = underway?.promise ?? requestPeerApproval(
+              approvalBus, internalSender, target, parsed.data.brief, "delegate_bot", address.threadId,
+            );
+            if (!underway) handoffApprovals.set(handoffId, { payloadHash, promise: approval });
+            let verdict: PeerApprovalOutcome;
+            try {
+              verdict = await approval;
+            } finally {
+              if (handoffApprovals.get(handoffId)?.promise === approval) handoffApprovals.delete(handoffId);
+            }
+            requireActiveInternalCapability();
+            if (verdict !== "allow") {
+              const failure = peerApprovalFailure(verdict);
+              return json(res, 403, { error: verdict === "deny" ? "Denied by user; no handoff created." : `${failure.error}; no handoff created.`,
+                approvalOutcome: verdict, approvalSource: failure.approvalSource });
+            }
+          }
+          const currentSender = store.bot(internalSender.id);
+          const currentTarget = store.bot(target.id);
+          if (!currentSender || !currentTarget || !connectorThread(currentSender.id, address.threadId)) {
+            return json(res, 404, { error: "the sender, recipient or source conversation no longer exists" });
+          }
+          if (!canAccessTeam(currentSender, currentTarget.section) || currentTarget.hidden || !peerAllowed(currentSender, currentTarget)) {
+            return json(res, 403, { error: "the recipient is no longer reachable; no handoff created" });
+          }
+          // Recheck after a possibly long approval wait: a concurrent retry
+          // may already have durably created and queued this exact handoff.
+          const raced = store.bots.flatMap(bot => (bot.tasks ?? []).map(task => ({ bot, task }))).find(({ task }) =>
+            task.handoff?.sourceBotId === currentSender.id && task.handoff.sourceThreadId === address.threadId &&
+            task.handoff.requestKey === parsed.data.requestKey);
+          if (raced) {
+            if (raced.bot.id !== currentTarget.id || raced.task.handoff?.payloadHash !== payloadHash) {
+              return json(res, 409, { error: "request_key was already used for a different handoff" });
+            }
+            if (wasAccepted(raced.task)) return json(res, 200, receipt(raced.task, true));
+          }
+          const stamp: NonNullable<TaskRecord["handoff"]> = {
+            sourceBotId: currentSender.id, sourceThreadId: address.threadId,
+            requestKey: parsed.data.requestKey, payloadHash,
+          };
+          const task = raced?.task ?? store.createTask(currentTarget.id, title, false, undefined,
+            { botId: currentSender.id, name: currentSender.name, delegationId: handoffId, at: Date.now() }, undefined, stamp);
+          if (!task) return json(res, 500, { error: "couldn't create the recipient thread" });
+          threadStarters.set(task.threadId, threadPersonKey(address.threadId));
+          if (delegatedFullAccess(currentSender, address.threadId, currentTarget)) {
+            grantDelegatedFullAccess(currentSender, currentTarget, task.threadId);
+          }
+          const sourceOwnerId = source?.id ?? currentSender.id;
+          const sourceUrl = threadRefUrl({ botId: sourceOwnerId, threadId: address.threadId });
+          const queued = queueDelegation(commsBus, currentSender, {
+            toBotId: currentTarget.id,
+            message: `${parsed.data.brief}\n\n[Source conversation](${sourceUrl}). This link grants no additional access and contains no copied transcript.`,
+            depth: 0,
+            targetThreadId: task.threadId,
+            // Acceptance happens only after the current peer policy has
+            // allowed this transfer. A later policy toggle cannot recreate
+            // a source-side wait after ownership has moved.
+            approvalAlreadyGranted: true,
+            oneWay: true,
+            deliveryId: handoffId,
+          }, MAX_COMMS_DEPTH, address.threadId);
+          if (queued.result !== "ok") {
+            store.deleteTask(currentTarget.id, task.threadId);
+            const why: Record<Exclude<QueueResult, "ok">, string> = {
+              self: "a bot cannot hand off to itself", too_deep: "handoff depth refused", no_target: "recipient no longer exists",
+              too_many: "too many handoffs are already queued from this conversation", conflict: "request_key conflicts with different queued work",
+              persistence_failed: "the handoff queue could not be saved",
+            };
+            return json(res, 409, { error: `${why[queued.result]}; no handoff created` });
+          }
+          internalCapability.openedThreads += 1;
+          drainThreadDelegations(address.threadId);
+          return json(res, 201, receipt(task, false));
         }
         if (method === "POST" && path === "/api/internal/coordinate-bots") {
           const parsed = z.object({
@@ -15180,6 +15344,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             too_deep: "thread chains are limited to one hop — open the thread on yourself, or do this one here",
             no_target: "no such bot",
             too_many: "too many handoffs queued on this turn — finish your turn and open the rest next time",
+            conflict: "that delivery id already belongs to different work",
+            persistence_failed: "the handoff queue could not be saved",
           };
           return json(res, 200, { error: said[queued.result === "ok" ? "no_target" : queued.result] });
         }

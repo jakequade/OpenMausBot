@@ -31,6 +31,13 @@ describe("peerProvenanceNote", () => {
     expect(asked).not.toMatch(/saying nothing is a valid response/i);
   });
 
+  it("gives a handoff recipient ownership without promising a callback", () => {
+    const note = peerProvenanceNote({ botName: "Scout", delivery: "handoff_bot" });
+    expect(note).toContain("Ownership is now yours");
+    expect(note).toContain("sender is not waiting");
+    expect(note).toContain("will not be resumed");
+  });
+
   // The note is the one line that says who wrote what follows, so the name
   // it quotes must not be able to end that line or start another.
   it("keeps a hostile name inside the note's own line", () => {
