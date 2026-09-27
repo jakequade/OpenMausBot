@@ -25,6 +25,7 @@ export type BotUpdatePatch = Partial<
     | "section"
     | "pinnedMessageId"
     | "chiefOfStaff"
+    | "automaticTeamIncidents"
     | "approvePeerComms"
     | "composio"
     | "browser"

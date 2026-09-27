@@ -42,3 +42,11 @@ not woken for its result — it stays in that thread, findable with
 What the person sees: the Chief's *Team incidents* thread in the sidebar (and
 on the phone), with one entry per incident and the Chief's one-line report of
 what it did — instead of a silent stall somewhere in the team.
+
+An owner can turn off **Automatically handle team incidents** in an existing
+Chief's Permissions settings. The responsible Chief is still selected normally,
+including additional teams it manages, and its opt-out is applied afterward;
+the failure is never rerouted to another Chief. Failed jobs keep their red error,
+status, logs, and cleanup, but create no incident, Chief turn, or failure
+notification. Existing incident history remains. Missing or enabled settings
+keep this behavior on, and re-enabling affects future failures.

@@ -220,7 +220,7 @@ import { getOrCreateChannel, mirrorActivity, mirrorExchange, mirrorReply, type C
 import { readMessageText, recallMessages, recentMessages, searchMessagesAsync, closeMessageSearch, closeMessageDb, chatFollowups, cancelledChatFollowup, settleChatFollowups, threadsReferencing } from "./message-db.ts";
 import { briefCrossingLabel, claimRecallCrossings, recallCrossingLabel } from "./recall-disclosure.ts";
 import { parseSince, parseUntil, recentWork, recentWorkPrompt, turnOutcomeLine } from "./recent-work.ts";
-import { chiefForBot, INCIDENTS_THREAD_TITLE, IncidentLedger, incidentChip, incidentText, type Incident, type IncidentKind } from "./incidents.ts";
+import { incidentChiefForBot, INCIDENTS_THREAD_TITLE, IncidentLedger, incidentChip, incidentText, type Incident, type IncidentKind } from "./incidents.ts";
 
 /** A session_read answer competes with the transcript for the context
  * window; a computer-use turn's output can run to hundreds of KB. */
@@ -6647,8 +6647,14 @@ function incidentContext(threadId: string): { lastRequest: string | null; lastRe
   };
 }
 
-function reportIncident(input: { kind: IncidentKind; bot: BotRecord; threadId: string; detail: string }): void {
+function reportIncident(
+  input: { kind: IncidentKind; bot: BotRecord; threadId: string; detail: string },
+  failureNotification?: ReturnType<typeof buildNotification>,
+): void {
   const { bot, threadId } = input;
+  const { chief, enabled } = incidentChiefForBot(store.bots, bot);
+  if (!enabled) return;
+  notify(failureNotification ?? null);
   const task = store.taskByThread(bot.id, threadId);
   // A thread another bot opened and is watching is that bot's to handle:
   // the delegator is woken with the failure already (wakeDelegationSource).
@@ -6666,11 +6672,10 @@ function reportIncident(input: { kind: IncidentKind; bot: BotRecord; threadId: s
   const count = incidentLedger.note(threadId);
   // a crash loop is one incident, not a storm
   if (count.muted) return;
-  const chief = chiefForBot(store.bots, bot);
-  // A run that could not start and a failed routine have already buzzed
-  // the person (turn-failed, routine-failed) by the time they get here; a
-  // failure or stall mid-run has not. One notification per failure, never two.
-  const alreadyNotified = input.kind === "could-not-start" || input.kind === "routine-failed";
+  // Start failures and failed routines bring their existing notification
+  // here so the Chief opt-out suppresses it with the incident. Failures and
+  // stalls mid-run need a notification only when no Chief is on duty.
+  const alreadyNotified = failureNotification != null;
   const tellThePerson = () => {
     if (alreadyNotified) return;
     notify(buildNotification("incident", bot, threadId, incidentChip(incident), {
@@ -8175,8 +8180,10 @@ async function startTurn(
           tool: { name: `error: ${message.slice(0, 160)}`, ok: false },
         });
         if (opts?.automationSource === undefined && !opts?.commsDepth && !opts?.cardContinuation) {
-          notify(buildNotification("turn-failed", bot, threadId, redactSecretsInText(message), { avatarUrl: bot.avatarUrl }));
-          reportIncident({ kind: "could-not-start", bot, threadId, detail: message });
+          reportIncident(
+            { kind: "could-not-start", bot, threadId, detail: message },
+            buildNotification("turn-failed", bot, threadId, redactSecretsInText(message), { avatarUrl: bot.avatarUrl }),
+          );
           // Claude settles the interrupt below as exit_before_result; the
           // completion fold must not report this failure a second time.
           resourceOwner.lazyClaimFailureReported = true;
@@ -8799,10 +8806,10 @@ async function startTurn(
       // failure. A delegated sub-turn is reported to the bot that asked
       // for it, in its own thread, so it does not need a second channel.
       if (opts?.automationSource === undefined && !opts?.commsDepth && !opts?.cardContinuation) {
-        notify(
+        reportIncident(
+          { kind: "could-not-start", bot, threadId, detail: message },
           buildNotification("turn-failed", bot, threadId, redactSecretsInText(message), { avatarUrl: bot.avatarUrl }),
         );
-        reportIncident({ kind: "could-not-start", bot, threadId, detail: message });
       }
       store.setTaskActivity(bot.id, threadId, "idle");
       directTurnBots.delete(threadId);
@@ -9112,8 +9119,10 @@ routines = new RoutineManager({
     if (!bot) return;
     const detail = run.error ? `${run.routineName}: ${run.error}` : run.routineName;
     const notificationBot = routineSourceOwner(run)?.bot ?? bot;
-    notify(buildNotification("routine-failed", notificationBot, routineSourceThread(run) ?? run.threadId ?? bot.threadId, detail));
-    reportIncident({ kind: "routine-failed", bot, threadId: run.threadId ?? bot.threadId, detail });
+    reportIncident(
+      { kind: "routine-failed", bot, threadId: run.threadId ?? bot.threadId, detail },
+      buildNotification("routine-failed", notificationBot, routineSourceThread(run) ?? run.threadId ?? bot.threadId, detail),
+    );
   },
   onRunDeferred: (run) => {
     const bot = store.bot(run.botId);
@@ -17995,6 +18004,15 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       }
       if (body.chiefOfStaff !== undefined && typeof body.chiefOfStaff !== "boolean") {
         return json(res, 400, { error: "chiefOfStaff must be true or false" });
+      }
+      if (body.automaticTeamIncidents !== undefined) {
+        if (typeof body.automaticTeamIncidents !== "boolean") {
+          return json(res, 400, { error: "automaticTeamIncidents must be true or false" });
+        }
+        if (!(body.chiefOfStaff === true || (existingBot?.chiefOfStaff && body.chiefOfStaff !== false))) {
+          return json(res, 400, { error: "Only a Chief of Staff can configure automatic team incidents" });
+        }
+        patch.automaticTeamIncidents = body.automaticTeamIncidents;
       }
       if (body.cloudBackend !== undefined) {
         const backendError = cloudBackendChangeError(Boolean(existingBot?.busy), activeVpsThreads.has(m[1]));

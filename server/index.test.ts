@@ -3857,6 +3857,29 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("persists the Chief-only automatic team incidents setting", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    try {
+      expect(bot.automaticTeamIncidents).toBeUndefined();
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { automaticTeamIncidents: false })).status).toBe(400);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        chiefOfStaff: true,
+        automaticTeamIncidents: false,
+      })).body.bot).toMatchObject({ chiefOfStaff: true, automaticTeamIncidents: false });
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { automaticTeamIncidents: "false" })).status).toBe(400);
+
+      const stored = JSON.parse(readFileSync(join(home, ".openmausbot", "bots.json"), "utf8"));
+      expect(stored.find((candidate: { id: string }) => candidate.id === bot.id)?.automaticTeamIncidents).toBe(false);
+
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { automaticTeamIncidents: true })).body.bot)
+        .toMatchObject({ automaticTeamIncidents: true });
+      expect((await api("GET", "/api/bots")).body.bots.find((candidate: { id: string }) => candidate.id === bot.id))
+        .toMatchObject({ automaticTeamIncidents: true });
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
   it("files a sidebar section atomically, trims and dedupes, and preserves its Chief", async () => {
     const incumbent = (await api("POST", "/api/bots")).body.bot;
     const incoming = (await api("POST", "/api/bots")).body.bot;
