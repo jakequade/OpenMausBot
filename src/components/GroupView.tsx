@@ -27,6 +27,7 @@ import { roomActivityVisible } from "@/lib/room-activity";
 import { normalizeState } from "@/lib/mascot";
 import { effectiveDefaultResponder, groupResponseHint } from "@/lib/group-routing";
 import { ChatMarkdown } from "./ChatMarkdown";
+import { CitationSelectionToolbar, SentCitations } from "./CitationUI";
 import { Composer } from "./Composer";
 import { ChatFindBar } from "./ChatFindBar";
 import { GroupTaskPicker } from "./TaskPicker";
@@ -63,7 +64,9 @@ import {
   resolveTranscriptWindow,
   tailWindowStart,
 } from "@/lib/transcript-window";
-import { useReplyDraft } from "@/lib/drafts";
+import { appendDraftAttachments, useReplyDraft } from "@/lib/drafts";
+import { citationPreviewText, splitTranscriptCitations, type CitationAttachment } from "@/lib/citations";
+import { highlightCitationSource } from "@/lib/citations-dom";
 
 function dayLabel(at: number): string {
   const d = new Date(at);
@@ -229,7 +232,8 @@ const Transcript = memo(function Transcript({
         }
         const m = item.message;
         const user = m.role === "user";
-        const attachments = user && m.text ? splitTranscriptAttachments(m.text) : null;
+        const cited = user && m.text ? splitTranscriptCitations(m.text) : null;
+        const attachments = user && m.text ? splitTranscriptAttachments(cited?.display ?? m.text) : null;
         const newCluster = !prev || prev.role !== m.role || prev.from?.botId !== m.from?.botId || Boolean(prev.comm) || newDay;
         const routineOwner = m.kind === "routine.run" ? memberOf(m.from?.botId) : undefined;
         const routineExecutionThreadId = m.routineRun?.executionThreadId;
@@ -329,7 +333,22 @@ const Transcript = memo(function Transcript({
                   {user ? (
                     <>
                       {attachments && <AttachmentGallery images={attachments.images} files={attachments.files} message={{ threadId: group.threadId, messageId: m.id }} eager={m.id === newestMessageId || m.id === newestUserMessageId} className={!attachments.display ? "mb-0" : undefined} />}
-                      <ThreadRefText text={attachments?.display ?? m.text ?? ""} peers={members} everyone={!group.dm} />
+                      <div
+                        data-citation-source={m.id}
+                        data-citation-owner-type="group"
+                        data-citation-owner={group.id}
+                        data-citation-thread={group.threadId}
+                      >
+                        <ThreadRefText text={attachments?.display ?? m.text ?? ""} peers={members} everyone={!group.dm} />
+                      </div>
+                      {cited && <SentCitations
+                        citations={cited.citations}
+                        onNavigate={async (citation: CitationAttachment) => {
+                          if (citation.source.ownerType !== "group" || citation.source.ownerId !== group.id || citation.source.threadId !== group.threadId || !group.messages.some((candidate) => candidate.id === citation.source.messageId)) return false;
+                          dispatch({ type: "focusMessage", threadId: group.threadId, messageId: citation.source.messageId });
+                          return highlightCitationSource(citation);
+                        }}
+                      />}
                       {m.via === "api" && (
                         <div className="mt-1 text-[11px] text-ink-secondary">Sent through the API, not typed here</div>
                       )}
@@ -344,7 +363,7 @@ const Transcript = memo(function Transcript({
                         </div>
                       )}
                       <MessageAttachmentGallery text={m.text ?? ""} attachments={m.attachments} message={{ threadId: group.threadId, messageId: m.id }} className={m.text ? undefined : "mb-0"} eager={m.id === newestMessageId || m.id === newestUserMessageId} />
-                      {m.text ? <ChatMarkdown text={m.text} mentionPeers={members} everyone={!group.dm} message={{ threadId: group.threadId, messageId: m.id }} /> : null}
+                      {m.text ? <div data-citation-source={m.id} data-citation-owner-type="group" data-citation-owner={group.id} data-citation-thread={group.threadId}><ChatMarkdown text={m.text} mentionPeers={members} everyone={!group.dm} message={{ threadId: group.threadId, messageId: m.id }} /></div> : null}
                     </>
                   )}
                 </div>
@@ -1268,7 +1287,7 @@ export function GroupView({ group }: { group: Group }) {
       {/* Pinned message banner — resolves against the room's full transcript */}
       {(() => {
         const pinned = group.messages.find((m) => m.id === group.pinnedMessageId && m.kind === "text");
-        const text = pinned ? (pinned.text ?? "").replace(/\s+/g, " ").trim() : "";
+        const text = pinned ? citationPreviewText(pinned.text ?? "").replace(/\s+/g, " ").trim() : "";
         if (!pinned || !text) return null;
         const sender = pinned.role === "user" ? t("chat.you") : (pinned.from?.name ?? t("room.aBot"));
         return (
@@ -1447,6 +1466,11 @@ export function GroupView({ group }: { group: Group }) {
         onClearReply={clearReply}
         onConsumeReply={consumeReply}
         onRestoreReply={restoreReply}
+      />
+      <CitationSelectionToolbar
+        viewportRef={scrollRef}
+        source={{ ownerType: "group", ownerId: group.id, threadId: group.threadId }}
+        onAdd={(citation) => appendDraftAttachments(`group:${group.id}:${group.threadId}`, [citation])}
       />
       </div>
       </div>
