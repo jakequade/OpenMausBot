@@ -462,11 +462,11 @@ function Bubble({
               {attachments && <AttachmentGallery images={attachments.images} files={attachments.files} message={{ threadId: bot.threadId, messageId: message.id }} eager={eagerAttachments} className={!visibleText ? "mb-0" : undefined} />}
               {visibleText && (
                 <div
+                  className={cn("chat-text", collapsible && "max-h-40 overflow-hidden [mask-image:linear-gradient(to_bottom,black_60%,transparent)]")}
                   data-citation-source={message.id}
                   data-citation-owner-type="bot"
                   data-citation-owner={bot.id}
                   data-citation-thread={bot.threadId}
-                  className={cn("chat-text", collapsible && "max-h-40 overflow-hidden [mask-image:linear-gradient(to_bottom,black_60%,transparent)]")}
                 >
                   <ThreadRefText text={visibleText} peers={mentionPeers} />
                 </div>

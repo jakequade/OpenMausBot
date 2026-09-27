@@ -160,7 +160,7 @@ describe("thread control placement", () => {
     } }));
     // unicode-bidi does not inherit: setting it on the bubble leaves this
     // inner text block LTR. Keep the class directly on the node with prose.
-    expect(markup).toMatch(/<div class="chat-text[^"]*">(?:شغّل|שלום|مرحبا)/);
+    expect(markup).toMatch(/<div class="chat-text[^"]*"[^>]*>(?:شغّل|שלום|مرحبا)/);
     expect(markup).not.toMatch(/class="[^"]*chat-text[^"\n]*bg-bubble-user/);
   });
 
