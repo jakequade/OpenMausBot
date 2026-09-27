@@ -1,7 +1,7 @@
 // Who hears about a broken run, how often, and in what words.
 import { describe, expect, it } from "vitest";
 
-import { chiefForBot, INCIDENT_HARD_LIMIT, INCIDENT_RETRY_LIMIT, IncidentLedger, incidentChip, incidentText, type Incident } from "./incidents.ts";
+import { chiefForBot, incidentChiefForBot, INCIDENT_HARD_LIMIT, INCIDENT_RETRY_LIMIT, IncidentLedger, incidentChip, incidentText, type Incident } from "./incidents.ts";
 
 const bots = [
   { id: "clive", name: "Clive", section: "Ops", chiefOfStaff: true },
@@ -22,6 +22,30 @@ describe("chiefForBot", () => {
     expect(chiefForBot(bots, bots[0]!)).toBeNull();
     expect(chiefForBot(bots, bots[4]!)).toBeNull();
     expect(chiefForBot(bots, bots[5]!)).toBeNull();
+  });
+
+  it("applies the selected Chief's incident setting without rerouting", () => {
+    const ownTeam = [
+      { id: "off", name: "Off", section: "Ops", chiefOfStaff: true, automaticTeamIncidents: false },
+      { id: "fallback", name: "Fallback", section: "Sales", chiefOfStaff: true, managedSections: ["Ops"] },
+      { id: "worker", name: "Worker", section: "Ops" },
+    ];
+    expect(incidentChiefForBot(ownTeam, ownTeam[2]!)).toEqual({ chief: ownTeam[0], enabled: false });
+
+    const managedTeam = [
+      { id: "off", name: "Off", section: "Sales", chiefOfStaff: true, managedSections: ["Research"], automaticTeamIncidents: false },
+      { id: "fallback", name: "Fallback", section: "Ops", chiefOfStaff: true, managedSections: ["Research"] },
+      { id: "worker", name: "Worker", section: "Research" },
+    ];
+    expect(incidentChiefForBot(managedTeam, managedTeam[2]!)).toEqual({ chief: managedTeam[0], enabled: false });
+  });
+
+  it("keeps incident handling enabled when the selected Chief's setting is missing or true", () => {
+    const worker = { id: "worker", name: "Worker", section: "Ops" };
+    const legacyChief = { id: "legacy", name: "Legacy", section: "Ops", chiefOfStaff: true };
+    expect(incidentChiefForBot([legacyChief, worker], worker)).toEqual({ chief: legacyChief, enabled: true });
+    const enabledChief = { ...legacyChief, automaticTeamIncidents: true };
+    expect(incidentChiefForBot([enabledChief, worker], worker)).toEqual({ chief: enabledChief, enabled: true });
   });
 });
 

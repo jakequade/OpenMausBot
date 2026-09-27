@@ -19,6 +19,7 @@ export interface IncidentBot {
   name: string;
   section?: string;
   chiefOfStaff?: boolean;
+  automaticTeamIncidents?: boolean;
   managedSections?: string[];
   hidden?: boolean;
 }
@@ -53,6 +54,16 @@ export function chiefForBot<T extends IncidentBot>(bots: readonly T[], bot: Inci
   return chiefs.find((chief) => sectionKey(chief.section) === sectionKey(bot.section))
     ?? chiefs.find((chief) => canAccessTeam(chief, bot.section))
     ?? null;
+}
+
+/** Select first, then apply that Chief's opt-out. Filtering candidates would
+ * incorrectly reroute a suppressed incident to another Chief. */
+export function incidentChiefForBot<T extends IncidentBot>(
+  bots: readonly T[],
+  bot: IncidentBot,
+): { chief: T | null; enabled: boolean } {
+  const chief = chiefForBot(bots, bot);
+  return { chief, enabled: chief?.automaticTeamIncidents !== false };
 }
 
 /** How many incidents one thread may raise before the Chief is told to

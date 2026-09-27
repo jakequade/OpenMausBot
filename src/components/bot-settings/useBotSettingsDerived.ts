@@ -32,6 +32,7 @@ export type BotPatch = Partial<
     | "speakReplies"
     | "voice"
     | "chiefOfStaff"
+    | "automaticTeamIncidents"
     | "managedSections"
     | "approvePeerComms"
     | "composio"
