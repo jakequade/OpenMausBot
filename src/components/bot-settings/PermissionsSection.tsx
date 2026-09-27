@@ -116,7 +116,7 @@ export function PermissionsSection({
           <div className="mt-0.5 text-[13px] text-ink-secondary">
             {bot.automaticTeamIncidents === false
               ? "Failed jobs keep their red error, but create no incident, Chief turn, or failure notification."
-              : "Start a Chief turn and notify you when a teammate's job fails, stalls, or cannot start."}
+              : "Create an incident and start this Chief when a teammate's job fails, stalls, cannot start, or a routine fails."}
           </div>
         </div>
         <Switch
