@@ -198,4 +198,23 @@ describe("Edit Profile boundary markers in sections", () => {
     expect(markup).not.toContain(CHIEF_COPY);
     expect(markup).not.toContain(OWNER_COPY);
   });
+
+  it("shows automatic team incidents only for an existing Chief and defaults it on", () => {
+    fixture.bots = [makeBot({ chiefOfStaff: true })];
+    const renderPermissions = (bot: Bot) => renderToStaticMarkup(
+      createElement(StoreProvider, null, createElement(PermissionsSection, { bot, derived: makeDerived() })),
+    );
+    expect(renderPermissions(makeBot())).not.toContain("Automatically handle team incidents");
+    expect(renderPermissions(makeBot({ chiefOfStaff: true })))
+      .toMatch(/aria-label="Automatically handle team incidents"[^>]+aria-checked="true"/);
+    expect(renderPermissions(makeBot({ chiefOfStaff: true, automaticTeamIncidents: false })))
+      .toMatch(/aria-label="Automatically handle team incidents"[^>]+aria-checked="false"/);
+
+    const draft = renderToStaticMarkup(createElement(
+      BotEditorContext.Provider,
+      { value: { request: api, draft: true } },
+      createElement(PermissionsSection, { bot: makeBot({ chiefOfStaff: true }), derived: makeDerived() }),
+    ));
+    expect(draft).not.toContain("Automatically handle team incidents");
+  });
 });

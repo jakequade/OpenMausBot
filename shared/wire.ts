@@ -295,6 +295,8 @@ export interface WireBot {
   pinnedMessageId?: string;
   /** The coordinator for this bot's sidebar section. */
   chiefOfStaff?: boolean;
+  /** Whether this Chief handles teammate failures automatically. Missing/true = enabled. */
+  automaticTeamIncidents?: boolean;
   /** Owner-selected additional teams this Chief may coordinate. */
   managedSections?: string[];
   /** Pause for human approval before this bot talks to a peer. */

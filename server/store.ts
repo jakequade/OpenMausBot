@@ -679,6 +679,10 @@ export class Store {
         delete b.managedSections;
         botsMigrated = true;
       }
+      if (b.automaticTeamIncidents !== undefined && typeof b.automaticTeamIncidents !== "boolean") {
+        delete b.automaticTeamIncidents;
+        botsMigrated = true;
+      }
       if (b.approvalMode !== undefined && !isApprovalMode(b.approvalMode)) {
         delete b.approvalMode;
         botsMigrated = true;

@@ -3,11 +3,14 @@
 // thread, and can resume it from there — the person's phone shows one
 // place to read. Pinned against the real server with the fake CLI failing
 // exactly one bot's run.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
+import { closeSync, existsSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, it } from "vitest";
-import { launchVerificationServer, runControlOmb } from "../scripts/control-omb.ts";
+import { launchVerificationServer, runControlOmb, verificationServerEnvironment } from "../scripts/control-omb.ts";
+import { waitForExit } from "./testing/cleanup.ts";
+import { openSse } from "./testing/sse.ts";
 
 it("reports a crashed run to the Chief, who retries it from the incidents thread", async () => {
   const fixture = await launchVerificationServer();
@@ -110,3 +113,141 @@ it("reports a crashed run to the Chief, who retries it from the incidents thread
     await fixture.close();
   }
 }, 150_000);
+
+it("keeps every managed-team failure local when the selected Chief opts out, then resumes future incidents", async () => {
+  const fixture = await launchVerificationServer();
+  const { url, dataDir, logPath } = fixture.info;
+  let restarted: ChildProcess | undefined;
+  const api = async (method: string, path: string, body?: unknown, expectedStatus = 200) => {
+    const response = await fetch(url + path, {
+      method,
+      headers: { "content-type": "application/json", origin: url },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    const value = await response.json() as any;
+    expect(response.status, `${method} ${path}: ${JSON.stringify(value)}`).toBe(expectedStatus);
+    return value;
+  };
+  const control = (args: string[]) => runControlOmb([...args, "--url", url]) as Promise<any>;
+  const botsNow = async () => (await api("GET", "/api/bots")).bots as any[];
+  const messages = async (threadId: string) => (await api("GET", `/api/threads/${threadId}/messages?limit=100`)).messages as any[];
+  const modeFile = join(dataDir, "incident-modes.json");
+  const invocationLog = join(dataDir, "incident-invocations.jsonl");
+  const setMode = (botId: string, mode: string) => writeFileSync(modeFile, JSON.stringify({ [botId]: mode }));
+  const errorCount = async (threadId: string) => (await messages(threadId)).filter((message) =>
+    message.kind === "activity" && message.tool?.ok === false && /error|failed|activity/i.test(message.tool?.name ?? "")
+  ).length;
+  const waitForNewError = async (threadId: string, before: number, pattern: RegExp) => {
+    await expect.poll(async () => {
+      const errors = (await messages(threadId)).filter((message) => message.kind === "activity" && message.tool?.ok === false);
+      return errors.length > before ? errors.at(-1)?.tool?.name ?? "" : "";
+    }, { timeout: 140_000, interval: 150 }).toMatch(pattern);
+  };
+  try {
+    const worker = (await control(["new-bot", "--name", "Ada", "--section", "Research"])).bot;
+    const fallback = (await control(["new-bot", "--name", "Fallback", "--section", "Sales"])).bot;
+    await api("PATCH", `/api/bots/${fallback.id}`, { chiefOfStaff: true });
+    await api("PATCH", `/api/bots/${fallback.id}`, { managedSections: ["Research"], acknowledgePeerScope: true });
+    const chief = (await control(["new-bot", "--name", "Quiet Chief", "--section", "Ops"])).bot;
+    await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true });
+    await api("PATCH", `/api/bots/${chief.id}`, {
+      managedSections: ["Research"],
+      acknowledgePeerScope: true,
+      automaticTeamIncidents: false,
+    });
+    const unrelated = (await control(["new-bot", "--name", "Unrelated", "--section", "Elsewhere"])).bot;
+
+    const wrapper = join(dataDir, "incident-toggle-cli.mjs");
+    writeFileSync(wrapper, [
+      "#!/usr/bin/env node",
+      'import { appendFileSync, existsSync, readFileSync } from "node:fs";',
+      "const at = process.argv.indexOf('--mcp-config');",
+      "const integration = at < 0 ? {} : JSON.parse(readFileSync(process.argv[at + 1], 'utf8')).mcpServers?.agents?.env ?? {};",
+      `const modes = existsSync(${JSON.stringify(modeFile)}) ? JSON.parse(readFileSync(${JSON.stringify(modeFile)}, "utf8")) : {};`,
+      "const mode = modes[integration.OMB_BOT_ID] ?? 'happy';",
+      `appendFileSync(${JSON.stringify(invocationLog)}, JSON.stringify({ botId: integration.OMB_BOT_ID, threadId: integration.OMB_THREAD_ID, mode }) + "\\n");`,
+      "process.env.FAKE_CLAUDE_MODE = mode;",
+      `await import(${JSON.stringify(pathToFileURL(join(process.cwd(), "server/testing/fake-claude-cli.ts")).href)});`,
+    ].join("\n"), { mode: 0o700 });
+    await api("PATCH", "/api/instances/claude", { cli: wrapper });
+
+    // The explicit false survives a real server restart before any failure.
+    await waitForExit(fixture.child, { signal: "SIGTERM" });
+    const env = verificationServerEnvironment(process.env, dataDir, Number(new URL(url).port));
+    env.OMB_TURN_STALL_MS = "60000";
+    const log = openSync(logPath, "a", 0o600);
+    restarted = spawn(process.execPath, ["--experimental-strip-types", join(process.cwd(), "server/index.ts")], {
+      cwd: process.cwd(), env, stdio: ["ignore", log, log],
+    });
+    closeSync(log);
+    await expect.poll(async () => {
+      if (restarted?.exitCode !== null) throw new Error(readFileSync(logPath, "utf8"));
+      return fetch(`${url}/api/health`).then((response) => response.ok).catch(() => false);
+    }, { timeout: 20_000, interval: 150 }).toBe(true);
+    expect((await botsNow()).find((bot) => bot.id === chief.id)).toMatchObject({ automaticTeamIncidents: false });
+
+    const stream = await openSse(`${url}/api/events`);
+    try {
+      await stream.until((frame) => frame.kind === "hello");
+
+      setMode(worker.id, "exit-early");
+      let before = await errorCount(worker.activeTaskId);
+      await control(["send", "--bot", worker.id, "--text", "Fail normally."]);
+      await waitForNewError(worker.activeTaskId, before, /exit_before_result|error/i);
+
+      // A missing CLI exercises the dispatch/could-not-start notification path.
+      await api("PATCH", "/api/instances/claude", { cli: join(dataDir, "missing-cli") });
+      before = await errorCount(worker.activeTaskId);
+      await control(["send", "--bot", worker.id, "--text", "Do not start."]);
+      await waitForNewError(worker.activeTaskId, before, /couldn't start|unavailable|error/i);
+      await api("PATCH", "/api/instances/claude", { cli: wrapper });
+
+      const routine = (await api("POST", "/api/routines", {
+        name: "Broken digest", prompt: "Fail this routine.", botId: worker.id, enabled: false,
+        schedule: { type: "once", at: Date.now() + 3_600_000 },
+      }, 201)).routine;
+      const run = (await api("POST", `/api/routines/${routine.id}/run`, undefined, 201)).run;
+      await expect.poll(async () => (await api("GET", "/api/routines")).runs.find((candidate: any) => candidate.id === run.id)?.status,
+        { timeout: 30_000, interval: 150 }).toBe("failed");
+      const failedRun = (await api("GET", "/api/routines")).runs.find((candidate: any) => candidate.id === run.id);
+      expect((await messages(failedRun.threadId)).some((message) => message.kind === "activity" && message.tool?.ok === false)).toBe(true);
+
+      setMode(worker.id, "hang");
+      before = await errorCount(worker.activeTaskId);
+      await control(["send", "--bot", worker.id, "--text", "Stall this job."]);
+      await waitForNewError(worker.activeTaskId, before, /no activity.*stopped/i);
+
+      // Unrelated notifications are unchanged.
+      setMode(unrelated.id, "happy");
+      await control(["send", "--bot", unrelated.id, "--text", "Finish normally."]);
+      await stream.until((frame) => frame.kind === "notify" && frame.notification?.kind === "done" && frame.notification?.botId === unrelated.id, 20_000);
+
+      // A bot frame is an ordering barrier for every failure notification above.
+      await api("PATCH", `/api/bots/${worker.id}`, { description: "Failures observed" });
+      await stream.until((frame) => frame.kind === "bot" && frame.bot?.id === worker.id && frame.bot?.description === "Failures observed");
+      expect(stream.frames.filter((frame) => frame.kind === "notify" && frame.notification?.botId === worker.id)).toEqual([]);
+      for (const candidate of [chief, fallback]) {
+        expect((await botsNow()).find((bot) => bot.id === candidate.id).tasks.some((task: any) => task.title === "Team incidents")).toBe(false);
+      }
+      const invocations = existsSync(invocationLog)
+        ? readFileSync(invocationLog, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line))
+        : [];
+      expect(invocations.some((entry) => entry.botId === chief.id || entry.botId === fallback.id)).toBe(false);
+
+      // Re-enabling restores the existing incident route for future failures.
+      await api("PATCH", `/api/bots/${chief.id}`, { automaticTeamIncidents: true });
+      setMode(worker.id, "exit-early");
+      before = await errorCount(worker.activeTaskId);
+      await control(["send", "--bot", worker.id, "--text", "Fail after re-enabling."]);
+      await waitForNewError(worker.activeTaskId, before, /exit_before_result|error/i);
+      await expect.poll(async () => (await botsNow()).find((bot) => bot.id === chief.id)?.tasks.some((task: any) => task.title === "Team incidents"),
+        { timeout: 20_000, interval: 150 }).toBe(true);
+      expect((await botsNow()).find((bot) => bot.id === fallback.id).tasks.some((task: any) => task.title === "Team incidents")).toBe(false);
+    } finally {
+      stream.close();
+    }
+  } finally {
+    if (restarted) await waitForExit(restarted, { signal: "SIGTERM" });
+    await fixture.close();
+  }
+}, 240_000);

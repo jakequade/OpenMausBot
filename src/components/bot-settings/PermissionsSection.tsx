@@ -110,6 +110,22 @@ export function PermissionsSection({
         {bot.chiefOfStaff && <ProposalStatus bot={bot} kind="owner" />}
       </div>
 
+      {bot.chiefOfStaff && !draft && <div className="flex items-center justify-between gap-4 rounded-xl bg-card p-4">
+        <div>
+          <div className="text-[15px] font-medium text-ink">Automatically handle team incidents</div>
+          <div className="mt-0.5 text-[13px] text-ink-secondary">
+            {bot.automaticTeamIncidents === false
+              ? "Failed jobs keep their red error, but create no incident, Chief turn, or failure notification."
+              : "Start a Chief turn and notify you when a teammate's job fails, stalls, or cannot start."}
+          </div>
+        </div>
+        <Switch
+          checked={bot.automaticTeamIncidents !== false}
+          aria-label="Automatically handle team incidents"
+          onClick={() => patch({ automaticTeamIncidents: bot.automaticTeamIncidents === false })}
+        />
+      </div>}
+
       <div className="flex items-center justify-between gap-4 rounded-xl bg-card p-4">
         <div>
           <div className="text-[15px] font-medium text-ink">Ask me before contacting other bots</div>
