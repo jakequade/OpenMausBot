@@ -38,14 +38,19 @@ function CitationEditor({
   const [comment, setComment] = useState(citation.comment ?? "");
   const tooLong = comment.length > CITATION_MAX_COMMENT_LENGTH;
   useLayoutEffect(() => {
-    const editor = ref.current;
-    if (!editor) return;
-    const input = point ? null : document.querySelector<HTMLTextAreaElement>('[data-tour="composer"] textarea');
-    const rect = input?.getBoundingClientRect();
-    place(editor, point ?? {
-      left: rect ? rect.left + (rect.width - editor.offsetWidth) / 2 : 8,
-      top: rect ? rect.top - editor.offsetHeight - 8 : 8,
-    });
+    const update = () => {
+      const editor = ref.current;
+      if (!editor) return;
+      const input = point ? null : document.querySelector<HTMLTextAreaElement>('[data-tour="composer"] textarea');
+      const rect = input?.getBoundingClientRect();
+      place(editor, point ?? {
+        left: rect ? rect.left + (rect.width - editor.offsetWidth) / 2 : 8,
+        top: rect ? rect.top - editor.offsetHeight - 8 : 8,
+      });
+    };
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
   }, [point]);
   useEffect(() => { inputRef.current?.focus(); }, []);
   return createPortal(
@@ -149,7 +154,13 @@ export function CitationSelectionToolbar({
     };
   }, [captured, editing, viewportRef]);
 
-  useLayoutEffect(() => { if (buttonRef.current && captured) place(buttonRef.current, captured.point); }, [captured]);
+  useLayoutEffect(() => {
+    if (!captured || editing) return;
+    const update = () => { if (buttonRef.current) place(buttonRef.current, captured.point); };
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, [captured, editing]);
   if (!captured) return null;
   if (editing) {
     return <CitationEditor
@@ -207,6 +218,19 @@ export function CitationBadge({
   const restoreTriggerFocus = () => requestAnimationFrame(() => triggerRef.current?.focus());
   useEffect(() => {
     if (open) requestAnimationFrame(() => detailsRef.current?.querySelector<HTMLButtonElement>("button")?.focus());
+  }, [open]);
+  useLayoutEffect(() => {
+    if (!open) return;
+    const update = () => {
+      const trigger = triggerRef.current;
+      const details = detailsRef.current;
+      if (!trigger || !details) return;
+      const rect = trigger.getBoundingClientRect();
+      place(details, { left: rect.left, top: rect.bottom + 6 });
+    };
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
   }, [open]);
   if (editing && onChange) {
     return <CitationEditor
