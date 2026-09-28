@@ -107,9 +107,7 @@ export function resolveCitationRange(root: HTMLElement, citation: CitationAttach
 export function findCitationSource(document: Document, citation: CitationAttachment): HTMLElement | null {
   return [...document.querySelectorAll<HTMLElement>("[data-citation-source]")].find((element) =>
     element.dataset.citationSource === citation.source.messageId &&
-    element.dataset.citationThread === citation.source.threadId &&
-    element.dataset.citationOwnerType === citation.source.ownerType &&
-    element.dataset.citationOwner === citation.source.ownerId,
+    element.dataset.citationOwnerType === citation.source.ownerType,
   ) ?? null;
 }
 

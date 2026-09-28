@@ -10,6 +10,7 @@ import {
   splitTranscriptCitations,
   withCitationComment,
 } from "./citations";
+import { findCitationSource } from "./citations-dom";
 
 const source = { ownerType: "bot" as const, ownerId: "bot-1", threadId: "thread-1", messageId: "message-1" };
 
@@ -74,5 +75,14 @@ describe("selected-text citations", () => {
     expect(findCitationText(text, selector)).toEqual({ start, end: start + 8 });
     expect(findCitationText("repeated and repeated", { text: "repeated", start: 99, end: 107, prefix: "", suffix: "" })).toBeNull();
     expect(findCitationText("source was deleted", selector)).toBeNull();
+  });
+
+  it("finds the same visible message after its bot or thread changes", () => {
+    const citation = citationAttachment(source, createCitationTextSelector("quoted text", 0, 11)!);
+    const unrelated = { dataset: { citationSource: "other", citationOwnerType: "bot" } } as unknown as HTMLElement;
+    const moved = { dataset: { citationSource: source.messageId, citationOwnerType: "bot", citationOwner: "bot-2", citationThread: "thread-2" } } as unknown as HTMLElement;
+    const document = { querySelectorAll: () => [unrelated, moved] } as unknown as Document;
+    expect(findCitationSource(document, citation)).toBe(moved);
+    expect(findCitationSource({ querySelectorAll: () => [unrelated] } as unknown as Document, citation)).toBeNull();
   });
 });

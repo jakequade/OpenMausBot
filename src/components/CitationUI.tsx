@@ -7,7 +7,6 @@ import {
   citationAttachment,
   withCitationComment,
   type CitationAttachment,
-  type CitationSource,
 } from "@/lib/citations";
 import { captureCitationSelection } from "@/lib/citations-dom";
 
@@ -87,11 +86,9 @@ function CitationEditor({
 
 export function CitationSelectionToolbar({
   viewportRef,
-  source,
   onAdd,
 }: {
   viewportRef: RefObject<HTMLElement | null>;
-  source: Pick<CitationSource, "ownerType" | "ownerId" | "threadId">;
   onAdd: (citation: CitationAttachment) => void;
 }) {
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -107,19 +104,19 @@ export function CitationSelectionToolbar({
       const viewport = viewportRef.current;
       const selection = viewport ? captureCitationSelection(viewport, window.getSelection()) : null;
       if (!selection) { setCaptured(null); return; }
-      const messageId = selection.source.dataset.citationSource;
-      if (!messageId) { setCaptured(null); return; }
+      const { citationSource: messageId, citationOwnerType: ownerType, citationOwner: ownerId, citationThread: threadId } = selection.source.dataset;
+      if (!messageId || !ownerId || !threadId || (ownerType !== "bot" && ownerType !== "group")) { setCaptured(null); return; }
       const rects = selection.range.getClientRects();
       const rect = rects.item(rects.length - 1) ?? selection.range.getBoundingClientRect();
       setCaptured({
         citation: selection.selector.text.length <= CITATION_MAX_QUOTE_LENGTH
-          ? citationAttachment({ ...source, messageId }, selection.selector)
+          ? citationAttachment({ ownerType, ownerId, threadId, messageId }, selection.selector)
           : {
               kind: "citation",
               version: 1,
               id: "selection-too-long",
               quote: selection.selector.text,
-              source: { ...source, messageId, ...selection.selector },
+              source: { ownerType, ownerId, threadId, messageId, ...selection.selector },
               size: selection.selector.text.length,
             },
         point: { left: rect.left, top: rect.bottom + 8 },
@@ -141,7 +138,7 @@ export function CitationSelectionToolbar({
       viewportRef.current?.removeEventListener("keyup", update);
       document.removeEventListener("keydown", focusAction, true);
     };
-  }, [captured, editing, source, viewportRef]);
+  }, [captured, editing, viewportRef]);
 
   useLayoutEffect(() => { if (buttonRef.current && captured) place(buttonRef.current, captured.point); }, [captured]);
   if (!captured) return null;

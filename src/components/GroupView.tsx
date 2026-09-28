@@ -344,7 +344,7 @@ const Transcript = memo(function Transcript({
                       {cited && <SentCitations
                         citations={cited.citations}
                         onNavigate={async (citation: CitationAttachment) => {
-                          if (citation.source.ownerType !== "group" || citation.source.ownerId !== group.id || citation.source.threadId !== group.threadId || !group.messages.some((candidate) => candidate.id === citation.source.messageId)) return false;
+                          if (citation.source.ownerType !== "group" || !group.messages.some((candidate) => candidate.id === citation.source.messageId)) return false;
                           dispatch({ type: "focusMessage", threadId: group.threadId, messageId: citation.source.messageId });
                           return highlightCitationSource(citation);
                         }}
@@ -1468,9 +1468,9 @@ export function GroupView({ group }: { group: Group }) {
         onRestoreReply={restoreReply}
       />
       <CitationSelectionToolbar
+        key={`${group.id}:${group.threadId}`}
         viewportRef={scrollRef}
-        source={{ ownerType: "group", ownerId: group.id, threadId: group.threadId }}
-        onAdd={(citation) => appendDraftAttachments(`group:${group.id}:${group.threadId}`, [citation])}
+        onAdd={(citation) => appendDraftAttachments(`group:${citation.source.ownerId}:${citation.source.threadId}`, [citation])}
       />
       </div>
       </div>

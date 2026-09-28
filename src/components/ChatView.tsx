@@ -474,7 +474,7 @@ function Bubble({
               {cited && <SentCitations
                 citations={cited.citations}
                 onNavigate={async (citation: CitationAttachment) => {
-                  if (citation.source.ownerType !== "bot" || citation.source.ownerId !== bot.id || citation.source.threadId !== bot.threadId || !visibleMessages(bot).some((candidate) => candidate.id === citation.source.messageId)) return false;
+                  if (citation.source.ownerType !== "bot" || !visibleMessages(bot).some((candidate) => candidate.id === citation.source.messageId)) return false;
                   dispatch({ type: "focusMessage", threadId: bot.threadId, messageId: citation.source.messageId });
                   return highlightCitationSource(citation);
                 }}
@@ -1567,9 +1567,9 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
           : undefined}
       />
       <CitationSelectionToolbar
+        key={`${bot.id}:${bot.threadId}`}
         viewportRef={scrollRef}
-        source={{ ownerType: "bot", ownerId: bot.id, threadId: bot.threadId }}
-        onAdd={(citation) => appendDraftAttachments(`bot:${bot.id}:${bot.threadId}`, [citation])}
+        onAdd={(citation) => appendDraftAttachments(`bot:${citation.source.ownerId}:${citation.source.threadId}`, [citation])}
       />
       </div>
       </div>
