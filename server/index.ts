@@ -1686,6 +1686,7 @@ function agentsIntegration(
       OMB_ROOM_TURN: roomCoordination ? "1" : "0",
       OMB_OWN_THREAD_CREATION: ownThreadCreation ? "1" : "0",
       OMB_SKILL_AUTHORING_ENABLED: skillAuthoring ? "1" : "0",
+      OMB_MEMORY_ENABLED: store.bot(botId)?.memoryEnabled === false ? "0" : "1",
       // The shared-computer tools are advertised only while the workspace
       // gate is on; the routes behind them refuse regardless.
       OMB_SHARED_COMPUTERS_ENABLED: sharedComputersEnabled(cfg) ? "1" : "0",
@@ -2817,7 +2818,7 @@ function previewSystemPrompt(bot: BotRecord) {
     { id: "routine", label: "Routines", text: agentsMounted ? ROUTINE_PROMPT : "" },
     { id: "profile", label: "Profile changes", text: agentsMounted ? PROFILE_PROMPT : "" },
     { id: "section-context", label: "Section context", text: sectionContextSystemPrompt(bot.section) },
-    { id: "memory", label: "Memory", text: memorySystemPrompt(bot.id, { managedWrites: agentsMounted, fileTools: Boolean(privateWorkspace) }) },
+    { id: "memory", label: "Memory", text: memorySystemPrompt(bot.id, { managedWrites: agentsMounted, fileTools: Boolean(privateWorkspace), enabled: bot.memoryEnabled !== false }) },
     { id: "skills", label: "Skills index", text: privateWorkspace ? skillsSystemPrompt(bot.id) : "" },
   ]);
   const totalBytes = built.sections.reduce((n, s) => n + s.bytes, 0);
@@ -4891,7 +4892,7 @@ bus.subscribe((event: RuntimeEvent) => {
     const messages = store.messagesFor(event.threadId);
     const reply = messages.findLast((message) => message.role === "bot" && message.kind === "text" && message.turnId === event.turnId);
     const bot = store.botByThread(event.threadId) ?? (reply?.from ? store.bot(reply.from.botId) : undefined);
-    if (!bot) return;
+    if (!bot || bot.memoryEnabled === false) return;
     const tools = messages
       .filter((message) => message.kind === "activity" && message.turnId === event.turnId && message.tool?.name)
       .map((message) => message.tool!.name);
@@ -8044,7 +8045,7 @@ async function startTurn(
       if (worksInWorkspace) {
         ensureWorkspace(bot.id);
         // baseline for the journal's turn-boundary diff (see the bus hook)
-        beginMemoryTurn(bot.id, threadId);
+        if (bot.memoryEnabled !== false) beginMemoryTurn(bot.id, threadId);
       }
       const privateWorkspace = worksInWorkspace ? ensureTaskWorkspace(bot.id, threadId) : undefined;
       const skillInstructions = renderSkillInstructions(selectedSkills, {
@@ -8485,7 +8486,7 @@ async function startTurn(
       const credentialPrompt = integrations.agents ? CREDENTIAL_PROMPT + (boundedCoordination ? "" : THREADS_PROMPT) : "";
       const routinePrompt = integrations.agents ? ROUTINE_PROMPT : "";
       const profilePrompt = integrations.agents ? PROFILE_PROMPT : "";
-      const recallPrompt = integrations.agents ? SESSION_SEARCH_SYSTEM_PROMPT : "";
+      const recallPrompt = integrations.agents && bot.memoryEnabled !== false ? SESSION_SEARCH_SYSTEM_PROMPT : "";
       const learnPrompt = skillAuthoring ? LEARN_PROMPT : "";
 
       // (activeVpsThreads was already claimed above, before the provision or
@@ -8610,7 +8611,7 @@ async function startTurn(
         // what the bot said lately in its other conversations, so a task
         // never redoes — or forgets — what another one already did
         { id: "recent", label: "Recent work", text: recentWorkPrompt(recentWork(recentWorkSources(bot), bot, { userName: cfg.profile?.name?.trim() || "User", currentThreadId: threadId })) },
-        { id: "memory", label: "Memory", text: memorySystemPrompt(bot.id, { managedWrites: Boolean(integrations.agents), fileTools: worksInWorkspace }) },
+        { id: "memory", label: "Memory", text: memorySystemPrompt(bot.id, { managedWrites: Boolean(integrations.agents), fileTools: worksInWorkspace, enabled: bot.memoryEnabled !== false }) },
         { id: "skills", label: "Skills index", text: privateWorkspace ? skillsSystemPrompt(bot.id) : "" },
         { id: "skill-instructions", label: "Skill instructions", text: skillInstructions },
         { id: "playbooks", label: "Playbooks", text: packagePlaybooks },
@@ -10575,7 +10576,7 @@ async function runGroupMemberTurn(
   const worksInWorkspace = supportsWorkspaceFiles(instance.driverKind);
   const workspace = worksInWorkspace ? ensureWorkspace(bot.id) : undefined;
   // a room member's memory writes are journaled the same as a 1:1 turn's
-  if (workspace) beginMemoryTurn(bot.id, threadId);
+  if (workspace && bot.memoryEnabled !== false) beginMemoryTurn(bot.id, threadId);
   // The room's folder pins here — on the first turn that actually
   // dispatches, not at PATCH time — so a folder set on a never-used room
   // still takes effect, while a room that already worked somewhere never
@@ -10587,7 +10588,7 @@ async function runGroupMemberTurn(
     const drift = checkSoulDrift(bot.id, bot.soul ?? "", bot.soulHash ?? "");
     if (drift.drift !== Boolean(bot.soulDrift)) store.patchBot(bot.id, { soulDrift: drift.drift });
   }
-  const roomMemory = memorySystemPrompt(bot.id, { managedWrites: Boolean(integrations.agents), fileTools: worksInWorkspace });
+  const roomMemory = memorySystemPrompt(bot.id, { managedWrites: Boolean(integrations.agents), fileTools: worksInWorkspace, enabled: bot.memoryEnabled !== false });
   // The same brief a 1:1 turn gets: what this member said lately in its
   // other conversations, so a standup is answered from what happened. A
   // brief can carry a private chat into the room; as with session_search
@@ -10618,7 +10619,7 @@ async function runGroupMemberTurn(
     { id: "team-computer", label: "Team computer", text: teamComputerPrompt(roomTeamComputer) },
     { id: "plan", label: "Surface", text: surfacePrompt({ computer: roomTeamComputer ? "cloud" : roomVmTarget ? "vm" : surfaceOfComputerKind(roomComputerKind), browser: Boolean(integrations.browser) }, { note: roomPlan.note }) },
     { id: "browser", label: "Browser", text: integrations.browser ? BUILT_IN_BROWSER_SYSTEM_PROMPT : "" },
-    { id: "recall", label: "Recall", text: integrations.agents ? SESSION_SEARCH_SYSTEM_PROMPT : "" },
+    { id: "recall", label: "Recall", text: integrations.agents && bot.memoryEnabled !== false ? SESSION_SEARCH_SYSTEM_PROMPT : "" },
     { id: "recent", label: "Recent work", text: recentWorkPrompt(recentLines) },
     { id: "section-context", label: "Section context", text: sectionContextSystemPrompt(bot.section) },
     // the room path has always put a newline before memory and trimmed
@@ -13655,6 +13656,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // Notes written from a room fewer people can see than this bot would
       // carry that room's words to everyone who can see the bot.
       if ((path === "/api/internal/memory" || path === "/api/internal/memory/log") && method === "POST") {
+        if (internalSender.memoryEnabled === false) {
+          return json(res, 403, { error: "Memory is disabled for this bot." });
+        }
         const room = store.groupByThread(internalCapability.threadId);
         if (room && !roomFeedsBot(room, internalSender)) {
           return json(res, 403, { error: "This room is visible to fewer people than you are, so notes from it can't go into your memory. Keep them in the room." });
@@ -14204,7 +14208,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (scope !== "all" && scope !== "conversations" && scope !== "memory") {
           return json(res, 400, { error: "scope must be all, conversations, or memory" });
         }
-        const memoryHits = scope === "conversations" || !q ? [] : searchMemoryFiles(from.id, q, limit);
+        const memoryHits = scope === "conversations" || !q || from.memoryEnabled === false ? [] : searchMemoryFiles(from.id, q, limit);
         if (scope === "memory") return json(res, 200, { hits: [], memoryHits });
         // Own threads: the bot's main chat and tasks, and the rooms it is a
         // member of with their tasks — conversations it already saw in full.
@@ -18089,6 +18093,14 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (body.voiceNotes !== undefined) {
         if (typeof body.voiceNotes !== "boolean") return json(res, 400, { error: "voiceNotes must be true or false" });
         patch.voiceNotes = body.voiceNotes;
+      }
+      if (body.memoryEnabled !== undefined) {
+        if (typeof body.memoryEnabled !== "boolean") return json(res, 400, { error: "memoryEnabled must be true or false" });
+        if (existingBot && (existingBot.busy || activeGroupTurnForBot(existingBot.id)) &&
+            body.memoryEnabled !== (existingBot.memoryEnabled !== false)) {
+          return json(res, 409, { error: "stop this bot's turn before changing its memory setting" });
+        }
+        patch.memoryEnabled = body.memoryEnabled;
       }
       // which of those apps' tools this bot may call (connector grants 1/5:
       // data model only — enforcement lands with slice 2). null returns the

@@ -29,6 +29,7 @@ export interface CatalogProfile {
   sharedComputers: boolean;
   /** A voice is actually configured for this bot (tts voiceReady). */
   voiceNotes: boolean;
+  memoryEnabled?: boolean;
   /** Written into start_thread's schema in a coordinating turn. */
   botId: string;
 }
@@ -44,6 +45,7 @@ export function catalogProfileFromEnv(env: NodeJS.ProcessEnv): CatalogProfile {
     skillAuthoring: env.OMB_SKILL_AUTHORING_ENABLED === "1",
     sharedComputers: env.OMB_SHARED_COMPUTERS_ENABLED === "1",
     voiceNotes: env.OMB_VOICE_NOTES === "1",
+    memoryEnabled: env.OMB_MEMORY_ENABLED !== "0",
     botId: env.OMB_BOT_ID ?? "",
   };
 }
@@ -830,9 +832,9 @@ const WATCHER_TOOL_NAMES = new Set(["create_options_card"]);
 /** The tools one turn is shown, exactly as tools/list serializes them. */
 export function availableTools(profile: CatalogProfile) {
   const TOOLS = toolDefinitions(profile.externalRuntime);
-  const BOT_SCOPED_TOOLS = profile.botId === WATCHER_OPTIONS_CARD_BOT_ID
-    ? TOOLS
-    : TOOLS.filter((tool) => !WATCHER_TOOL_NAMES.has(tool.name));
+  const BOT_SCOPED_TOOLS = TOOLS.filter((tool) =>
+    (profile.botId === WATCHER_OPTIONS_CARD_BOT_ID || !WATCHER_TOOL_NAMES.has(tool.name)) &&
+    (profile.memoryEnabled !== false || (tool.name !== "memory_update" && tool.name !== "memory_log")));
   const AUTHORING_TOOLS = profile.skillAuthoring
     ? BOT_SCOPED_TOOLS
     : BOT_SCOPED_TOOLS.filter((tool) => !SKILL_TOOL_NAMES.has(tool.name));

@@ -61,7 +61,7 @@ interface Conflict {
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-export function MemorySection({ bot, active = true }: { bot: Bot; active?: boolean }) {
+export function MemorySection({ bot, active = true, onToggle }: { bot: Bot; active?: boolean; onToggle: (enabled: boolean) => void }) {
   const { capabilities } = useDesktopCapabilities();
   const [overview, setOverview] = useState<MemoryOverview | null>(null);
   const [journal, setJournal] = useState<MemoryJournalRow[] | null>(null);
@@ -199,6 +199,14 @@ export function MemorySection({ bot, active = true }: { bot: Bot; active?: boole
     <div className="flex flex-col gap-4">
       <div className="rounded-xl bg-card p-4">
         <div className="text-[15px] font-medium text-ink">Memory</div>
+        <label className="mt-3 flex items-center gap-2 text-[13px] text-ink">
+          <input type="checkbox" checked={bot.memoryEnabled !== false} disabled={bot.busy} onChange={(event) => onToggle(event.target.checked)} />
+          Let this bot use memory
+        </label>
+        <p className="mt-1 text-[12.5px] text-ink-secondary">
+          Off stops memory prompts, native memory tools, and automatic turn logs. Existing files remain available for review.
+          {bot.busy ? " Stop this bot's turn before changing this setting." : ""}
+        </p>
         <p className="mt-1 text-[13px] leading-relaxed text-ink-secondary">
           Notes this bot keeps between tasks. They are plain markdown files in a folder on this computer — open them in any
           editor, or in Obsidian.

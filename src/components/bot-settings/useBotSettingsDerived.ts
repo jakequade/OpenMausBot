@@ -30,6 +30,7 @@ export type BotPatch = Partial<
     | "autoApprove"
     | "approvalMode"
     | "speakReplies"
+    | "memoryEnabled"
     | "voice"
     | "chiefOfStaff"
     | "automaticTeamIncidents"
