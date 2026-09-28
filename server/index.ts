@@ -6908,7 +6908,7 @@ function finalizeDelegationWatch(
       store.appendMessage(threadId, {
         role: "bot",
         kind: "activity",
-        tool: { name: `Handoff failed — ${failureName}`, ok: false },
+        tool: { name: `Send failed — ${failureName}`, ok: false },
       });
     }
     return true;
@@ -7064,7 +7064,7 @@ const runDelegatedTurn: Parameters<typeof drainDelegations>[3] = (toBotId, rawTe
       ? { botId: opener.id, name: opener.name, unattended: unattended || undefined }
       : undefined;
     const text = openedThreadId && opener
-      ? withPeerProvenance(rawText, { botName: opener.name, delivery: oneWay ? "handoff_bot" : "start_thread", unattended })
+      ? withPeerProvenance(rawText, { botName: opener.name, delivery: oneWay ? "send_to_bot" : "start_thread", unattended })
       : rawText;
     if (targetThreadId) {
       delegationWatch.set(targetThreadId, {
@@ -14742,7 +14742,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
               : "the teammate's turn runs after your current turn finishes" }),
         });
       }
-      if (path === "/api/internal/room-targets" || path === "/api/internal/coordinate-bots" || path === "/api/internal/handoff-bot") {
+      if (path === "/api/internal/room-targets" || path === "/api/internal/coordinate-bots" || path === "/api/internal/send-to-bot") {
         const source = store.groupByThread(internalCapability.threadId);
         if (!internalCapability.roomCoordination || (source && (source.dm || !source.memberIds.includes(internalSender.id)))) {
           return json(res, 403, { error: "Coordination requires an active chat turn. Finish together already manages its own teammate turns." });
@@ -14761,7 +14761,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             bots: reachablePeers(store.bots, internalSender).map(bot => ({ id: bot.id, name: bot.name, title: bot.title, section: bot.section, busy: bot.busy })),
             rooms, note: "Without group_id: use this room when in a room, otherwise your standing conversation with that teammate — every assignment you send it continues the same thread, so write as if it remembers the last one. Each bot uses its own environment and permissions. Files are not transferred: pass absolute paths only when accessible to the recipient, otherwise pass the content." });
         }
-        if (method === "POST" && path === "/api/internal/handoff-bot") {
+        if (method === "POST" && path === "/api/internal/send-to-bot") {
           const parsed = z.object({
             toBotId: z.string().min(1).max(128),
             brief: z.string().trim().min(1).max(20_000),
@@ -14786,20 +14786,20 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             task.handoff?.sourceBotId === internalSender.id && task.handoff.sourceThreadId === address.threadId &&
             task.handoff.requestKey === parsed.data.requestKey);
           if (found && (found.bot.id !== target.id || found.task.handoff?.payloadHash !== payloadHash)) {
-            return json(res, 409, { error: "request_key was already used for a different handoff" });
+            return json(res, 409, { error: "request_key was already used for a different send" });
           }
           const priorPending = pendingDelegationInfo(handoffId);
           const priorReceipt = findDelegationReceipt(handoffId);
           if (!found && (priorPending || priorReceipt?.oneWay)) {
             const priorBotId = priorPending?.toBotId ?? priorReceipt?.toBotId;
             if (priorBotId !== target.id) {
-              return json(res, 409, { error: "request_key was already used for a different handoff" });
+              return json(res, 409, { error: "request_key was already used for a different send" });
             }
             const priorThreadId = priorPending?.targetThreadId ?? priorReceipt?.targetThreadId;
             return json(res, 410, {
               error: priorThreadId
                 ? "the original recipient thread was deleted; use a new request_key for new work"
-                : "the original handoff receipt predates retryable thread identity; use a new request_key",
+                : "the original send receipt predates retryable thread identity; use a new request_key",
               ...(priorThreadId ? { thread: { botId: target.id, threadId: priorThreadId,
                 url: threadRefUrl({ botId: target.id, threadId: priorThreadId }) } } : {}),
             });
@@ -14812,7 +14812,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             duplicate,
             message: duplicate
               ? "Identical retry: the original recipient thread and execution stand. The sender will not be resumed."
-              : "Handoff accepted. Ownership moved to the recipient thread; results, failures and questions stay there and will not resume the sender.",
+              : "Sent to the recipient. Ownership moved to their thread; results, failures and questions stay there and will not resume the sender.",
             thread: { botId: target.id, threadId: task.threadId, title: task.title,
               url: threadRefUrl({ botId: target.id, threadId: task.threadId }) },
           });
@@ -14823,7 +14823,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           if (peerReviewRequired(internalSender, address.threadId)) {
             const underway = handoffApprovals.get(handoffId);
             if (underway && underway.payloadHash !== payloadHash) {
-              return json(res, 409, { error: "request_key is awaiting approval for a different handoff" });
+              return json(res, 409, { error: "request_key is awaiting approval for a different send" });
             }
             const approval = underway?.promise ?? requestPeerApproval(
               approvalBus, internalSender, target, parsed.data.brief, "delegate_bot", address.threadId,
@@ -14838,7 +14838,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             requireActiveInternalCapability();
             if (verdict !== "allow") {
               const failure = peerApprovalFailure(verdict);
-              return json(res, 403, { error: verdict === "deny" ? "Denied by user; no handoff created." : `${failure.error}; no handoff created.`,
+              return json(res, 403, { error: verdict === "deny" ? "Denied by user; nothing was sent." : `${failure.error}; nothing was sent.`,
                 approvalOutcome: verdict, approvalSource: failure.approvalSource });
             }
           }
@@ -14848,7 +14848,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             return json(res, 404, { error: "the sender, recipient or source conversation no longer exists" });
           }
           if (!canAccessTeam(currentSender, currentTarget.section) || currentTarget.hidden || !peerAllowed(currentSender, currentTarget)) {
-            return json(res, 403, { error: "the recipient is no longer reachable; no handoff created" });
+            return json(res, 403, { error: "the recipient is no longer reachable; nothing was sent" });
           }
           // Recheck after a possibly long approval wait: a concurrent retry
           // may already have durably created and queued this exact handoff.
@@ -14857,7 +14857,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             task.handoff.requestKey === parsed.data.requestKey);
           if (raced) {
             if (raced.bot.id !== currentTarget.id || raced.task.handoff?.payloadHash !== payloadHash) {
-              return json(res, 409, { error: "request_key was already used for a different handoff" });
+              return json(res, 409, { error: "request_key was already used for a different send" });
             }
             if (wasAccepted(raced.task)) return json(res, 200, receipt(raced.task, true));
           }
@@ -14889,11 +14889,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           if (queued.result !== "ok") {
             store.deleteTask(currentTarget.id, task.threadId);
             const why: Record<Exclude<QueueResult, "ok">, string> = {
-              self: "a bot cannot hand off to itself", too_deep: "handoff depth refused", no_target: "recipient no longer exists",
-              too_many: "too many handoffs are already queued from this conversation", conflict: "request_key conflicts with different queued work",
-              persistence_failed: "the handoff queue could not be saved",
+              self: "a bot cannot send work to itself", too_deep: "send depth refused", no_target: "recipient no longer exists",
+              too_many: "too many sends are already queued from this conversation", conflict: "request_key conflicts with different queued work",
+              persistence_failed: "the send queue could not be saved",
             };
-            return json(res, 409, { error: `${why[queued.result]}; no handoff created` });
+            return json(res, 409, { error: `${why[queued.result]}; nothing was sent` });
           }
           internalCapability.openedThreads += 1;
           drainThreadDelegations(address.threadId);

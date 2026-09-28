@@ -1,6 +1,6 @@
-# One-way bot handoffs
+# One-way bot sends
 
-These fixtures prove `handoff_bot` without touching a live workspace.
+These fixtures prove `send_to_bot` without touching a live workspace.
 
 ## Server lifecycle
 
@@ -13,7 +13,7 @@ pnpm vitest run \
 ```
 
 The direct fixture covers a fresh recipient thread, exact retry identity,
-no sender resume, and onward handoff. The room fixture covers the canonical
+no sender resume, and onward sending. The room fixture covers the canonical
 room source link, no room callback, and approval denial. The delegation store
 fixture covers restart-safe queued work, stable delivery identity, source
 failure, and recipient execution at a fresh coordination depth.
@@ -23,7 +23,7 @@ failure, and recipient execution at a fresh coordination depth.
 ```sh
 OMB_UI_E2E=1 pnpm vitest run \
   scripts/testing/direct-coordination-ui.e2e.test.ts \
-  -t "opens both sides of a one-way handoff" \
+  -t "opens both sides of a one-way send" \
   --maxWorkers=1
 ```
 

@@ -31,8 +31,8 @@ describe("peerProvenanceNote", () => {
     expect(asked).not.toMatch(/saying nothing is a valid response/i);
   });
 
-  it("gives a handoff recipient ownership without promising a callback", () => {
-    const note = peerProvenanceNote({ botName: "Scout", delivery: "handoff_bot" });
+  it("gives a send recipient ownership without promising a callback", () => {
+    const note = peerProvenanceNote({ botName: "Scout", delivery: "send_to_bot" });
     expect(note).toContain("Ownership is now yours");
     expect(note).toContain("sender is not waiting");
     expect(note).toContain("will not be resumed");

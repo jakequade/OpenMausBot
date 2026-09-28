@@ -262,7 +262,7 @@ beforeAll(async () => {
       });
       return;
     }
-    if (req.method === "POST" && req.url === "/api/internal/handoff-bot") {
+    if (req.method === "POST" && req.url === "/api/internal/send-to-bot") {
       let data = "";
       req.on("data", (c) => (data += c));
       req.on("end", () => {
@@ -2282,8 +2282,8 @@ describe("coordinate_bots arguments (room turn)", () => {
 
   it("hands one complete brief to one fresh recipient thread", async () => {
     const listed = await roomRpc("tools/list");
-    expect(listed.result.tools.map((tool: { name: string }) => tool.name)).toContain("handoff_bot");
-    const res = await roomRpc("tools/call", { name: "handoff_bot", arguments: {
+    expect(listed.result.tools.map((tool: { name: string }) => tool.name)).toContain("send_to_bot");
+    const res = await roomRpc("tools/call", { name: "send_to_bot", arguments: {
       bot_id: "bot-helper", brief: "Ship the reviewed patch.", request_key: "ship-1", title: "Ship it",
     } });
     expect(res.result.isError).toBeFalsy();
@@ -2295,7 +2295,7 @@ describe("coordinate_bots arguments (room turn)", () => {
 
   it("refuses an incomplete handoff before contacting the server", async () => {
     lastHandoffBody = null;
-    const res = await roomRpc("tools/call", { name: "handoff_bot", arguments: {
+    const res = await roomRpc("tools/call", { name: "send_to_bot", arguments: {
       bot_id: "bot-helper", brief: "", request_key: "ship-2",
     } });
     expect(res.result.isError).toBe(true);

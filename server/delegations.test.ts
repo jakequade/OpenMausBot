@@ -240,7 +240,7 @@ describe("drainDelegations", () => {
     void runTargetCalls;
   });
 
-  it("keeps a one-way handoff queued across source failure and restart, then dispatches at depth zero", async () => {
+  it("keeps a one-way send queued across source failure and restart, then dispatches at depth zero", async () => {
     let free = false;
     const bus: CommsBus = { ...commsBus, threadSlotFree: () => free };
     const opened = store.createTask(target.id, "Release owner", false)!;

@@ -46,7 +46,7 @@ export interface DelegationItem {
   targetThreadId?: string;
   /** One-way ownership transfer: never mirror a result or wake the source. */
   oneWay?: boolean;
-  /** Stable id supplied by handoff_bot so a lost response can be retried. */
+  /** Stable id supplied by send_to_bot so a lost response can be retried. */
   deliveryId?: string;
 }
 

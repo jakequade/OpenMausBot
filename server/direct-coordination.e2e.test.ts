@@ -50,13 +50,13 @@ it("does not grant a specialist direct access to its supervising Chief", () => f
   expect((await f.api("/api/bots")).groups).toEqual([]);
 }), 45_000);
 
-it("hands work to one fresh recipient thread without resuming the sender and reuses identical retries", () => fixture(async f => {
+it("sends work to one fresh recipient thread without resuming the sender and reuses identical retries", () => fixture(async f => {
   const brief = "Own the release checklist and ask any clarification here.";
   const sourceUrl = `openmausbot://thread/${f.chief.activeTaskId}?bot=${f.chief.id}`;
   f.plan[f.chief.id] = { turns: [
-    { steps: [{ tool: "handoff_bot", arguments: { bot_id: f.lead.id, request_key: "release-checklist", title: "Release checklist", brief } }], reply: "Handoff accepted" },
-    { steps: [{ tool: "handoff_bot", arguments: { bot_id: f.lead.id, request_key: "release-checklist", title: "Release checklist", brief } }], reply: "Retry returned the original receipt" },
-    { steps: [{ tool: "handoff_bot", expectError: true, arguments: { bot_id: f.lead.id, request_key: "release-checklist", title: "Release checklist", brief } }], reply: "Deleted handoff was not recreated" },
+    { steps: [{ tool: "send_to_bot", arguments: { bot_id: f.lead.id, request_key: "release-checklist", title: "Release checklist", brief } }], reply: "Work sent" },
+    { steps: [{ tool: "send_to_bot", arguments: { bot_id: f.lead.id, request_key: "release-checklist", title: "Release checklist", brief } }], reply: "Retry returned the original receipt" },
+    { steps: [{ tool: "send_to_bot", expectError: true, arguments: { bot_id: f.lead.id, request_key: "release-checklist", title: "Release checklist", brief } }], reply: "Deleted send was not recreated" },
   ] };
   f.plan[f.lead.id] = { reply: "I need the release date before continuing.", expectContextIncludes: [brief, sourceUrl] };
   f.save();
@@ -75,13 +75,13 @@ it("hands work to one fresh recipient thread without resuming the sender and reu
   expect((await f.messages(handed.threadId)).some((message: any) => message.text === "I need the release date before continuing.")).toBe(true);
   expect((await f.messages(f.chief.activeTaskId)).some((message: any) => message.text?.includes("I need the release date"))).toBe(false);
 
-  await send("Retry the exact same handoff after the response was lost.");
+  await send("Retry the exact same send after the response was lost.");
   await new Promise(resolve => setTimeout(resolve, 250));
   const secondTasks = (await f.api("/api/bots")).bots.find((bot: any) => bot.id === f.lead.id).tasks;
   expect(secondTasks.filter((task: any) => task.title === "Release checklist")).toHaveLength(1);
   expect(f.evidence().filter((turn: any) => turn.botId === f.lead.id)).toHaveLength(1);
   const toolResults = f.evidence().filter((turn: any) => turn.botId === f.chief.id)
-    .flatMap((turn: any) => turn.evidence.filter((entry: any) => entry.step?.tool === "handoff_bot"));
+    .flatMap((turn: any) => turn.evidence.filter((entry: any) => entry.step?.tool === "send_to_bot"));
   expect(f.evidence().filter((turn: any) => turn.botId === f.chief.id)).toHaveLength(2);
   expect(toolResults).toHaveLength(2);
   const receipts = toolResults.map((entry: any) => JSON.parse(entry.response.result.content[0].text));
@@ -95,16 +95,16 @@ it("hands work to one fresh recipient thread without resuming the sender and reu
   expect(finalState.tasks.some((task: any) => task.title === "Release checklist")).toBe(false);
   expect(f.evidence().filter((turn: any) => turn.botId === f.lead.id)).toHaveLength(1);
   const refused = f.evidence().filter((turn: any) => turn.botId === f.chief.id).at(-1)
-    .evidence.find((entry: any) => entry.step?.tool === "handoff_bot").response.result;
+    .evidence.find((entry: any) => entry.step?.tool === "send_to_bot").response.result;
   expect(refused.isError).toBe(true);
   expect(refused.content[0].text).toContain("original recipient thread was deleted");
 }), 60_000);
 
 it("lets the recipient hand ownership onward without callbacks to either earlier sender", () => fixture(async f => {
-  f.plan[f.chief.id] = { steps: [{ tool: "handoff_bot", arguments: {
+  f.plan[f.chief.id] = { steps: [{ tool: "send_to_bot", arguments: {
     bot_id: f.lead.id, request_key: "release-owner", title: "Release owner", brief: "Own the release and pass QA to Reviewer.",
   } }], reply: "Release handed off" };
-  f.plan[f.lead.id] = { steps: [{ tool: "handoff_bot", arguments: {
+  f.plan[f.lead.id] = { steps: [{ tool: "send_to_bot", arguments: {
     bot_id: f.specialist.id, request_key: "release-qa", title: "Release QA", brief: "Own final release QA.",
   } }], reply: "QA ownership passed onward" };
   f.plan[f.specialist.id] = { reply: "Release QA complete" };
@@ -122,7 +122,7 @@ it("lets the recipient hand ownership onward without callbacks to either earlier
 }), 60_000);
 
 it("dispatches an accepted handoff even when the sender turn then fails", () => fixture(async f => {
-  f.plan[f.chief.id] = { steps: [{ tool: "handoff_bot", arguments: {
+  f.plan[f.chief.id] = { steps: [{ tool: "send_to_bot", arguments: {
     bot_id: f.lead.id, request_key: "source-failed", title: "Survives source failure", brief: "Own this despite my turn failing.",
   } }], fail: true };
   f.plan[f.lead.id] = { reply: "The transferred work survived." };
@@ -136,7 +136,7 @@ it("dispatches an accepted handoff even when the sender turn then fails", () => 
 }), 45_000);
 
 it("keeps recipient failure in the recipient thread without resuming the sender", () => fixture(async f => {
-  f.plan[f.chief.id] = { steps: [{ tool: "handoff_bot", arguments: {
+  f.plan[f.chief.id] = { steps: [{ tool: "send_to_bot", arguments: {
     bot_id: f.lead.id, request_key: "recipient-failed", title: "Recipient failure", brief: "Own this failing fixture.",
   } }], reply: "Ownership transferred" };
   f.plan[f.lead.id] = { fail: true };
@@ -169,7 +169,7 @@ it("recovers accepted queued handoff work after a server process restart without
     .filter((messages: any[]) => messages.some((message: any) => message.text === "Occupied and gated")).length,
   { timeout: 15_000 }).toBe(3);
 
-  f.plan[f.chief.id] = { steps: [{ tool: "handoff_bot", arguments: {
+  f.plan[f.chief.id] = { steps: [{ tool: "send_to_bot", arguments: {
     bot_id: f.lead.id, request_key: "restart-handoff", title: "Restart handoff", brief: "Resume this queued ownership after restart.",
   } }], reply: "Ownership queued durably" };
   f.plan[f.lead.id] = { reply: "Recovered handoff executed once." };

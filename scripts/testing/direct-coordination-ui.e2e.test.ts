@@ -85,7 +85,7 @@ const enabled = process.env.OMB_UI_E2E === "1" || Boolean(resolveAgentBrowserBin
   }
 }, 240_000);
 
-(enabled ? it : it.skip)("opens both sides of a one-way handoff from their canonical links", async () => {
+(enabled ? it : it.skip)("opens both sides of a one-way send from their canonical links", async () => {
   const temporary = mkdtempSync(join(tmpdir(), "omb-handoff-ui-plan-"));
   const planPath = join(temporary, "plan.json");
   writeFileSync(planPath, "{}");
@@ -121,7 +121,7 @@ const enabled = process.env.OMB_UI_E2E === "1" || Boolean(resolveAgentBrowserBin
     };
     const recipient = (await api("/api/bots", { name: "Engineer", title: "Implementation", section: "" })).bot;
     writeFileSync(planPath, JSON.stringify({
-      [info.botId]: { steps: [{ tool: "handoff_bot", arguments: {
+      [info.botId]: { steps: [{ tool: "send_to_bot", arguments: {
         bot_id: recipient.id, request_key: "release-owner", title: "Release owner", brief: "Own the fixture release.",
       } }], reply: "Ownership transferred" },
       [recipient.id]: { reply: "I own the fixture release now." },

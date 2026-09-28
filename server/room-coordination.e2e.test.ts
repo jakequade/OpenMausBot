@@ -44,10 +44,10 @@ async function addSupervisingChief(f: any, section = "") {
   return chief;
 }
 
-it("hands a room request to a fresh recipient thread without a callback to the room", () => withRooms(async f => {
+it("sends a room request to a fresh recipient thread without a callback to the room", () => withRooms(async f => {
   const brief = "Take ownership of the deployment checklist.";
   const sourceUrl = `openmausbot://thread/${f.source.activeTaskId}?bot=${f.source.id}`;
-  f.plan[f.sender.id] = { steps: [{ tool: "handoff_bot", arguments: {
+  f.plan[f.sender.id] = { steps: [{ tool: "send_to_bot", arguments: {
     bot_id: f.target.id, request_key: "deploy-checklist", title: "Deployment checklist", brief,
   } }], reply: "Ownership transferred" };
   f.plan[f.target.id] = { reply: "Deployment checklist is ready.", expectContextIncludes: [brief, sourceUrl] };
@@ -64,9 +64,9 @@ it("hands a room request to a fresh recipient thread without a callback to the r
   expect(f.nodes()).toEqual([]);
 }), 45_000);
 
-it("does not report or create a handoff when peer approval is denied", () => withRooms(async f => {
+it("does not report or create a send when peer approval is denied", () => withRooms(async f => {
   await f.api(`/api/bots/${f.sender.id}`, { approvePeerComms: true }, "PATCH");
-  f.plan[f.sender.id] = { steps: [{ tool: "handoff_bot", expectError: true, arguments: {
+  f.plan[f.sender.id] = { steps: [{ tool: "send_to_bot", expectError: true, arguments: {
     bot_id: f.target.id, request_key: "denied-handoff", title: "Must not exist", brief: "Take ownership.",
   } }], reply: "The handoff was denied" };
   await f.start();
@@ -83,9 +83,9 @@ it("does not report or create a handoff when peer approval is denied", () => wit
   expect(f.provider().filter((turn: any) => turn.botId === f.target.id)).toHaveLength(0);
 }), 45_000);
 
-it("coalesces concurrent identical handoff retries behind one approval and one execution", () => withRooms(async f => {
+it("coalesces concurrent identical send retries behind one approval and one execution", () => withRooms(async f => {
   await f.api(`/api/bots/${f.sender.id}`, { approvePeerComms: true }, "PATCH");
-  const step = { tool: "handoff_bot", arguments: {
+  const step = { tool: "send_to_bot", arguments: {
     bot_id: f.target.id, request_key: "concurrent-handoff", title: "Concurrent handoff", brief: "Own this once.",
   } };
   f.plan[f.sender.id] = { steps: [step, step], parallelSteps: true, reply: "Ownership transferred once" };
@@ -104,7 +104,7 @@ it("coalesces concurrent identical handoff retries behind one approval and one e
   const tasks = state.bots.find((bot: any) => bot.id === f.target.id).tasks.filter((task: any) => task.title === "Concurrent handoff");
   expect(tasks).toHaveLength(1);
   const calls = f.provider().find((turn: any) => turn.botId === f.sender.id).evidence
-    .filter((entry: any) => entry.step?.tool === "handoff_bot")
+    .filter((entry: any) => entry.step?.tool === "send_to_bot")
     .map((entry: any) => JSON.parse(entry.response.result.content[0].text));
   expect(calls).toHaveLength(2);
   expect(calls.map((call: any) => call.duplicate).sort()).toEqual([false, true]);
