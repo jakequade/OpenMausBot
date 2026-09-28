@@ -84,3 +84,73 @@ const enabled = process.env.OMB_UI_E2E === "1" || Boolean(resolveAgentBrowserBin
     await removeTempDir(temporary);
   }
 }, 240_000);
+
+(enabled ? it : it.skip)("opens both sides of a one-way send from their canonical links", async () => {
+  const temporary = mkdtempSync(join(tmpdir(), "omb-handoff-ui-plan-"));
+  const planPath = join(temporary, "plan.json");
+  writeFileSync(planPath, "{}");
+  const child = spawn(process.execPath, ["--experimental-strip-types", "scripts/control-omb.ts", "ui", "launch"], {
+    cwd: ROOT, env: { ...process.env, FAKE_CLAUDE_ROOM_PLAN: planPath }, stdio: ["ignore", "pipe", "pipe"],
+  });
+  let output = "";
+  let error = "";
+  child.stdout.on("data", chunk => { output += String(chunk); });
+  child.stderr.on("data", chunk => { error += String(chunk); });
+  child.on("error", caught => { error += caught.message; });
+  let info: { ui: string; url: string; botId: string; logPath: string };
+  try {
+    await expect.poll(() => {
+      if (child.exitCode !== null || child.signalCode !== null) throw new Error(error);
+      try { info = JSON.parse(output); return Boolean(info.ui); } catch { return false; }
+    }, { timeout: 180_000, interval: 250 }).toBe(true);
+    const api = async (path: string, body?: unknown, method = "POST") => {
+      const response = await fetch(info.url + path, body === undefined ? {} : {
+        method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(JSON.stringify(result));
+      return result;
+    };
+    const ui = (verb: string, ...args: string[]) => runControlOmb(["ui", verb, "--ui", info.ui, ...args]) as Promise<any>;
+    const snapshot = async () => (await ui("snapshot")) as { snapshot: string; refs: Record<string, { role: string; name: string }> };
+    const click = async (name: string) => {
+      const current = await snapshot();
+      const match = Object.entries(current.refs).find(([, entry]) => entry.role === "button" && entry.name.endsWith(name));
+      expect(match).toBeDefined();
+      await ui("click", "--ref", "@" + match![0]);
+    };
+    const recipient = (await api("/api/bots", { name: "Engineer", title: "Implementation", section: "" })).bot;
+    writeFileSync(planPath, JSON.stringify({
+      [info.botId]: { steps: [{ tool: "send_to_bot", arguments: {
+        bot_id: recipient.id, request_key: "release-owner", title: "Release owner", brief: "Own the fixture release.",
+      } }], reply: "Ownership transferred" },
+      [recipient.id]: { reply: "I own the fixture release now." },
+    }));
+    await ui("flag", "--set", "features.showToolCalls=false");
+    await ui("type", "--name", "Message Pepper", "--text", "Hand the fixture release to Engineer");
+    await ui("press", "--keys", "Enter");
+    await ui("wait-settle", "--timeout", "60");
+    await expect.poll(async () => (await snapshot()).snapshot, { timeout: 15_000 }).toContain("Opened thread #Release owner on Engineer");
+    const state = await api("/api/bots");
+    const source = state.bots.find((bot: any) => bot.id === info.botId);
+    const handed = state.bots.find((bot: any) => bot.id === recipient.id).tasks.find((task: any) => task.title === "Release owner");
+    expect(handed.threadId).toBeTruthy();
+    await ui("screenshot", "--out", info.logPath + ".handoff-source.png");
+    await click("Opened thread #Release owner on Engineer");
+    await expect.poll(async () => (await snapshot()).snapshot, { timeout: 15_000 }).toContain("I own the fixture release now.");
+    expect((await snapshot()).snapshot).toContain("Source conversation");
+    await ui("screenshot", "--out", info.logPath + ".handoff-recipient.png");
+    await click("Source conversation");
+    await expect.poll(async () => (await snapshot()).snapshot, { timeout: 15_000 }).toContain("Hand the fixture release to Engineer");
+    const selectedSource = (await api("/api/bots")).bots.find((bot: any) => bot.id === info.botId);
+    expect(selectedSource.threadId).toBe(source.threadId);
+    writeFileSync(info.logPath + ".handoff.json", JSON.stringify({
+      sourceThreadId: source.threadId, recipientThreadId: handed.threadId,
+      sourceScreenshot: info.logPath + ".handoff-source.png", recipientScreenshot: info.logPath + ".handoff-recipient.png",
+    }, null, 2));
+    console.log("Handoff UI evidence:", info.logPath + ".handoff.json");
+  } finally {
+    await waitForExit(child, { signal: "SIGINT", graceMs: 30_000 });
+    await removeTempDir(temporary);
+  }
+}, 240_000);

@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
+import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import { launchVerificationServer, runControlOmb } from "../scripts/control-omb.ts";
+import { launchVerificationServer, runControlOmb, verificationServerEnvironment } from "../scripts/control-omb.ts";
 import { request } from "../scripts/mcp-server.ts";
-import { removeTempDir } from "./testing/cleanup.ts";
+import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
 import { openSse } from "./testing/sse.ts";
 
 /** Run direct Chief/lead/specialist workflows against an isolated scripted server. */
@@ -48,6 +49,161 @@ it("does not grant a specialist direct access to its supervising Chief", () => f
   expect(response.result.content[0].text).toContain("sender's section boundary");
   expect((await f.api("/api/bots")).groups).toEqual([]);
 }), 45_000);
+
+it("sends work to one fresh recipient thread without resuming the sender and reuses identical retries", () => fixture(async f => {
+  const brief = "Own the release checklist and ask any clarification here.";
+  const sourceUrl = `openmausbot://thread/${f.chief.activeTaskId}?bot=${f.chief.id}`;
+  f.plan[f.chief.id] = { turns: [
+    { steps: [{ tool: "send_to_bot", arguments: { bot_id: f.lead.id, request_key: "release-checklist", title: "Release checklist", brief } }], reply: "Work sent" },
+    { steps: [{ tool: "send_to_bot", arguments: { bot_id: f.lead.id, request_key: "release-checklist", title: "Release checklist", brief } }], reply: "Retry returned the original receipt" },
+    { steps: [{ tool: "send_to_bot", expectError: true, arguments: { bot_id: f.lead.id, request_key: "release-checklist", title: "Release checklist", brief } }], reply: "Deleted send was not recreated" },
+  ] };
+  f.plan[f.lead.id] = { reply: "I need the release date before continuing.", expectContextIncludes: [brief, sourceUrl] };
+  f.save();
+
+  const send = async (text: string) => {
+    await f.cli("send", "--bot", f.chief.id, "--task", f.chief.activeTaskId, "--text", text);
+    expect((await f.wait()).status).toBe("settled");
+  };
+  await send("Hand this release checklist to Engineering.");
+  await expect.poll(() => f.evidence().filter((turn: any) => turn.botId === f.lead.id).length, { timeout: 15_000 }).toBe(1);
+  const firstState = (await f.api("/api/bots")).bots;
+  expect(firstState.find((bot: any) => bot.id === f.chief.id)).toMatchObject({ busy: false, waitingForTeammates: false });
+  const firstTasks = firstState.find((bot: any) => bot.id === f.lead.id).tasks;
+  const handed = firstTasks.find((task: any) => task.title === "Release checklist");
+  expect(handed.threadId).not.toBe(f.lead.activeTaskId);
+  expect((await f.messages(handed.threadId)).some((message: any) => message.text === "I need the release date before continuing.")).toBe(true);
+  expect((await f.messages(f.chief.activeTaskId)).some((message: any) => message.text?.includes("I need the release date"))).toBe(false);
+
+  await send("Retry the exact same send after the response was lost.");
+  await new Promise(resolve => setTimeout(resolve, 250));
+  const secondTasks = (await f.api("/api/bots")).bots.find((bot: any) => bot.id === f.lead.id).tasks;
+  expect(secondTasks.filter((task: any) => task.title === "Release checklist")).toHaveLength(1);
+  expect(f.evidence().filter((turn: any) => turn.botId === f.lead.id)).toHaveLength(1);
+  const toolResults = f.evidence().filter((turn: any) => turn.botId === f.chief.id)
+    .flatMap((turn: any) => turn.evidence.filter((entry: any) => entry.step?.tool === "send_to_bot"));
+  expect(f.evidence().filter((turn: any) => turn.botId === f.chief.id)).toHaveLength(2);
+  expect(toolResults).toHaveLength(2);
+  const receipts = toolResults.map((entry: any) => JSON.parse(entry.response.result.content[0].text));
+  expect(receipts[0].thread).toEqual(receipts[1].thread);
+  expect(receipts[0].thread).toMatchObject({ botId: f.lead.id, threadId: handed.threadId,
+    url: `openmausbot://thread/${handed.threadId}?bot=${f.lead.id}` });
+
+  await f.api(`/api/bots/${f.lead.id}/tasks/${handed.threadId}`, {}, "DELETE");
+  await send("Retry after the original recipient thread was deleted.");
+  const finalState = (await f.api("/api/bots")).bots.find((bot: any) => bot.id === f.lead.id);
+  expect(finalState.tasks.some((task: any) => task.title === "Release checklist")).toBe(false);
+  expect(f.evidence().filter((turn: any) => turn.botId === f.lead.id)).toHaveLength(1);
+  const refused = f.evidence().filter((turn: any) => turn.botId === f.chief.id).at(-1)
+    .evidence.find((entry: any) => entry.step?.tool === "send_to_bot").response.result;
+  expect(refused.isError).toBe(true);
+  expect(refused.content[0].text).toContain("original recipient thread was deleted");
+}), 60_000);
+
+it("lets the recipient hand ownership onward without callbacks to either earlier sender", () => fixture(async f => {
+  f.plan[f.chief.id] = { steps: [{ tool: "send_to_bot", arguments: {
+    bot_id: f.lead.id, request_key: "release-owner", title: "Release owner", brief: "Own the release and pass QA to Reviewer.",
+  } }], reply: "Release handed off" };
+  f.plan[f.lead.id] = { steps: [{ tool: "send_to_bot", arguments: {
+    bot_id: f.specialist.id, request_key: "release-qa", title: "Release QA", brief: "Own final release QA.",
+  } }], reply: "QA ownership passed onward" };
+  f.plan[f.specialist.id] = { reply: "Release QA complete" };
+  await f.start();
+  expect((await f.wait()).status).toBe("settled");
+  await expect.poll(() => f.evidence().filter((turn: any) => turn.botId === f.specialist.id).length, { timeout: 15_000 }).toBe(1);
+  const bots = (await f.api("/api/bots")).bots;
+  const leadThread = bots.find((bot: any) => bot.id === f.lead.id).tasks.find((task: any) => task.title === "Release owner");
+  const qaThread = bots.find((bot: any) => bot.id === f.specialist.id).tasks.find((task: any) => task.title === "Release QA");
+  expect(leadThread.threadId).toBeTruthy();
+  expect(qaThread.threadId).toBeTruthy();
+  expect((await f.messages(qaThread.threadId)).some((message: any) => message.text === "Release QA complete")).toBe(true);
+  expect((await f.messages(leadThread.threadId)).some((message: any) => message.text?.includes("Release QA complete"))).toBe(false);
+  expect((await f.messages(f.chief.activeTaskId)).some((message: any) => message.text?.includes("QA ownership") || message.text?.includes("Release QA complete"))).toBe(false);
+}), 60_000);
+
+it("dispatches an accepted handoff even when the sender turn then fails", () => fixture(async f => {
+  f.plan[f.chief.id] = { steps: [{ tool: "send_to_bot", arguments: {
+    bot_id: f.lead.id, request_key: "source-failed", title: "Survives source failure", brief: "Own this despite my turn failing.",
+  } }], fail: true };
+  f.plan[f.lead.id] = { reply: "The transferred work survived." };
+  f.save();
+  await f.cli("send", "--bot", f.chief.id, "--task", f.chief.activeTaskId, "--text", "Transfer this before failing");
+  await expect.poll(() => f.evidence().filter((turn: any) => turn.botId === f.lead.id).length, { timeout: 15_000 }).toBe(1);
+  const target = (await f.api("/api/bots")).bots.find((bot: any) => bot.id === f.lead.id);
+  const handed = target.tasks.find((task: any) => task.title === "Survives source failure");
+  expect((await f.messages(handed.threadId)).some((message: any) => message.text === "The transferred work survived.")).toBe(true);
+  expect((await f.messages(f.chief.activeTaskId)).some((message: any) => message.text === "The transferred work survived.")).toBe(false);
+}), 45_000);
+
+it("keeps recipient failure in the recipient thread without resuming the sender", () => fixture(async f => {
+  f.plan[f.chief.id] = { steps: [{ tool: "send_to_bot", arguments: {
+    bot_id: f.lead.id, request_key: "recipient-failed", title: "Recipient failure", brief: "Own this failing fixture.",
+  } }], reply: "Ownership transferred" };
+  f.plan[f.lead.id] = { fail: true };
+  await f.start();
+  expect((await f.wait()).status).toBe("settled");
+  await expect.poll(() => f.evidence().filter((turn: any) => turn.botId === f.lead.id).length, { timeout: 15_000 }).toBe(1);
+  const bots = (await f.api("/api/bots")).bots;
+  const handed = bots.find((bot: any) => bot.id === f.lead.id).tasks.find((task: any) => task.title === "Recipient failure");
+  await expect.poll(async () => (await f.messages(handed.threadId)).some((message: any) => message.tool?.ok === false), { timeout: 15_000 }).toBe(true);
+  const sourceMessages = await f.messages(f.chief.activeTaskId);
+  expect(sourceMessages.some((message: any) => message.text?.includes("Delegated turn") || message.tool?.ok === false)).toBe(false);
+  expect(bots.find((bot: any) => bot.id === f.chief.id).tasks.some((task: any) => task.title === "Team incidents")).toBe(false);
+  expect(f.evidence().filter((turn: any) => turn.botId === f.chief.id)).toHaveLength(1);
+}), 45_000);
+
+it("recovers accepted queued handoff work after a server process restart without duplicate dispatch", () => fixture(async f => {
+  const busyGate = join(f.session.info.dataDir, "busy-recipient");
+  f.plan[f.lead.id] = { progress: "Occupied and gated", gateFile: busyGate, reply: "The interrupted busy turn must not finish." };
+  f.save();
+  const occupied = [f.lead.activeTaskId];
+  for (let i = 2; i <= 3; i++) {
+    occupied.push((await f.api(`/api/bots/${f.lead.id}/tasks`, { title: `Occupied ${i}` })).task.threadId);
+  }
+  for (const threadId of occupied) {
+    await f.cli("send", "--bot", f.lead.id, "--task", threadId, "--text", `Stay occupied for restart setup ${threadId}`);
+  }
+  await expect.poll(async () => (await f.api("/api/bots")).bots.find((bot: any) => bot.id === f.lead.id)
+    .tasks.filter((task: any) => task.busy).length, { timeout: 15_000 }).toBe(3);
+  await expect.poll(async () => (await Promise.all(occupied.map((threadId: string) => f.messages(threadId))))
+    .filter((messages: any[]) => messages.some((message: any) => message.text === "Occupied and gated")).length,
+  { timeout: 15_000 }).toBe(3);
+
+  f.plan[f.chief.id] = { steps: [{ tool: "send_to_bot", arguments: {
+    bot_id: f.lead.id, request_key: "restart-handoff", title: "Restart handoff", brief: "Resume this queued ownership after restart.",
+  } }], reply: "Ownership queued durably" };
+  f.plan[f.lead.id] = { reply: "Recovered handoff executed once." };
+  f.save();
+  await f.cli("send", "--bot", f.chief.id, "--task", f.chief.activeTaskId, "--text", "Transfer restart work");
+  expect((await f.wait()).status).toBe("settled");
+  let handed: any;
+  await expect.poll(async () => {
+    handed = (await f.api("/api/bots")).bots.find((bot: any) => bot.id === f.lead.id)
+      .tasks.find((task: any) => task.title === "Restart handoff");
+    return Boolean(handed);
+  }, { timeout: 15_000 }).toBe(true);
+  const durableQueue = readFileSync(join(f.session.info.dataDir, "delegations.json"), "utf8");
+  expect(durableQueue).toContain(handed.threadId);
+
+  await waitForExit(f.session.child, { signal: "SIGKILL", graceMs: 2_000 });
+  const port = Number(new URL(f.session.info.url).port);
+  const log = openSync(f.session.info.logPath, "a", 0o600);
+  let replacement: ChildProcess | undefined;
+  try {
+    replacement = spawn(process.execPath, ["--experimental-strip-types", join(process.cwd(), "server/index.ts")], {
+      cwd: process.cwd(), env: verificationServerEnvironment(process.env, f.session.info.dataDir, port), stdio: ["ignore", log, log],
+    });
+    closeSync(log);
+    await expect.poll(async () => {
+      try { return (await fetch(f.session.info.url + "/api/health", { signal: AbortSignal.timeout(1_000) })).ok; }
+      catch { return false; }
+    }, { timeout: 20_000 }).toBe(true);
+    await expect.poll(() => f.evidence().filter((turn: any) => turn.botId === f.lead.id).length, { timeout: 20_000 }).toBe(1);
+    expect((await f.messages(handed.threadId)).filter((message: any) => message.text === "Recovered handoff executed once.")).toHaveLength(1);
+  } finally {
+    if (replacement) await waitForExit(replacement, { signal: "SIGTERM" });
+  }
+}), 90_000);
 
 it.each([false, true])("starts independent work immediately and frees the Chief while waiting (source fails: %s)", fail => fixture(async f => {
   const sourceGate = join(f.session.info.dataDir, "source-ready");

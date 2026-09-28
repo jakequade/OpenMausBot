@@ -533,6 +533,22 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     }) });
     return { text: JSON.stringify(r), ...(r.error ? { isError: true } : {}) };
   }
+  if (name === "send_to_bot") {
+    const botId = String(args.bot_id ?? "").trim();
+    const brief = String(args.brief ?? "").trim();
+    const requestKey = String(args.request_key ?? "").trim();
+    const title = typeof args.title === "string" ? args.title.trim() : "";
+    if (!botId || !brief || !requestKey) {
+      return { text: "send_to_bot needs bot_id, a complete brief and request_key; title is optional.", isError: true };
+    }
+    if (turn.threadsOpenedThisTurn >= MAX_THREADS_PER_TURN) {
+      return { text: `You have already opened ${MAX_THREADS_PER_TURN} threads this turn, which is the limit.`, isError: true };
+    }
+    const r = await api("/api/internal/send-to-bot", { method: "POST", body: JSON.stringify({ toBotId: botId, brief, requestKey, ...(title ? { title } : {}) }) });
+    if (r.error) return { text: String(r.error), isError: true };
+    if (r.duplicate !== true) turn.threadsOpenedThisTurn += 1;
+    return { text: JSON.stringify(r) };
+  }
   if (name === "list_bots") {
     const r = await api(`/api/internal/agents?self=${encodeURIComponent(BOT_ID)}`);
     const bots = (r.bots as Array<Json>) ?? [];

@@ -94,12 +94,20 @@ export interface TaskRecord extends WireTask {
    * it landed. Absent means legacy/unknown: it may be a person's choice,
    * so only positively identified auto pins yield to Works on changes. */
   surfaceSource?: "user" | "auto";
+  /** Durable retry identity for a one-way bot handoff. Private because the
+   * receipt exposes only the canonical thread reference. */
+  handoff?: {
+    sourceBotId: string;
+    sourceThreadId: string;
+    requestKey: string;
+    payloadHash: string;
+  };
 }
 
 /** TaskRecord fields no client may see. Everything else must be on WireTask:
  * the exactness assertion below fails to compile when either side drifts,
  * so a new server field forces a decision — wire-visible or private here. */
-export type TaskWirePrivateKeys = "resumeCursors" | "lastInstanceId" | "handedMessages" | "appliedCompactionId" | "contextFloor" | "lastContextModel" | "surfaceSource";
+export type TaskWirePrivateKeys = "resumeCursors" | "lastInstanceId" | "handedMessages" | "appliedCompactionId" | "contextFloor" | "lastContextModel" | "surfaceSource" | "handoff";
 export type TaskWireProjection = Pick<TaskRecord, Exclude<keyof TaskRecord, TaskWirePrivateKeys>>;
 type AssertExact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
 type AssertSameKeys<A, B> = [keyof A] extends [keyof B] ? ([keyof B] extends [keyof A] ? true : never) : never;
@@ -113,7 +121,7 @@ export const taskWireProjectionIsExact: TaskWireProjectionIsExact = true;
 export function toWireTask(task: TaskRecord): WireTask {
   const { resumeCursors: _resumeCursors, lastInstanceId: _lastInstanceId, handedMessages: _handedMessages,
     appliedCompactionId: _appliedCompactionId, contextFloor: _contextFloor, lastContextModel: _lastContextModel,
-    surfaceSource: _surfaceSource, ...wire } = task;
+    surfaceSource: _surfaceSource, handoff: _handoff, ...wire } = task;
   return wire;
 }
 
@@ -2450,7 +2458,8 @@ export class Store {
 
   /** A fresh context on the same bot: new thread, new session, same
    * persona/tools/computer. Becomes the active task. */
-  createTask(botId: string, title?: string, activate = true, projectId?: string, openedBy?: TaskOpenedBy, approvalMode?: "ask" | "full"): TaskRecord | null {
+  createTask(botId: string, title?: string, activate = true, projectId?: string, openedBy?: TaskOpenedBy,
+    approvalMode?: "ask" | "full", handoff?: TaskRecord["handoff"]): TaskRecord | null {
     const bot = this.bot(botId);
     if (!bot) return null;
     if (projectId !== undefined && !this.project(botId, projectId)) return null;
@@ -2462,6 +2471,7 @@ export class Store {
       updatedAt: createdAt,
       ...(projectId ? { projectId } : {}),
       ...(openedBy ? { openedBy: structuredClone(openedBy) } : {}),
+      ...(handoff ? { handoff: structuredClone(handoff) } : {}),
       resumeCursors: {},
       modelSelection: structuredClone(bot.modelSelection),
       approvalMode: approvalMode ?? approvalModeFor(bot),

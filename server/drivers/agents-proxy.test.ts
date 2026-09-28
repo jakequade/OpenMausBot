@@ -27,6 +27,8 @@ let savedResultWrites = 0;
 let lastAskBody: any = null;
 let lastCoordinateBody: any = null;
 let coordinateResponse: unknown = { ok: true };
+let lastHandoffBody: any = null;
+let handoffResponse: unknown = { accepted: true, duplicate: false, thread: { botId: "bot-helper", threadId: "thread-handoff", title: "Ship it", url: "/b/bot-helper/t/thread-handoff" } };
 let lastRoomsQuery = "";
 let lastPostBody: any = null;
 let lastExecBody: any = null;
@@ -257,6 +259,16 @@ beforeAll(async () => {
         lastCoordinateBody = JSON.parse(data);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify(coordinateResponse));
+      });
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/internal/send-to-bot") {
+      let data = "";
+      req.on("data", (c) => (data += c));
+      req.on("end", () => {
+        lastHandoffBody = JSON.parse(data);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(handoffResponse));
       });
       return;
     }
@@ -2266,6 +2278,29 @@ describe("coordinate_bots arguments (room turn)", () => {
     expect(lastCoordinateBody).toMatchObject({
       botIds: ["bot-helper"], message: "please review the patch", requestKey: "review-1",
     });
+  });
+
+  it("hands one complete brief to one fresh recipient thread", async () => {
+    const listed = await roomRpc("tools/list");
+    expect(listed.result.tools.map((tool: { name: string }) => tool.name)).toContain("send_to_bot");
+    const res = await roomRpc("tools/call", { name: "send_to_bot", arguments: {
+      bot_id: "bot-helper", brief: "Ship the reviewed patch.", request_key: "ship-1", title: "Ship it",
+    } });
+    expect(res.result.isError).toBeFalsy();
+    expect(lastHandoffBody).toEqual({
+      toBotId: "bot-helper", brief: "Ship the reviewed patch.", requestKey: "ship-1", title: "Ship it",
+    });
+    expect(JSON.parse(res.result.content[0].text)).toMatchObject({ accepted: true, duplicate: false });
+  });
+
+  it("refuses an incomplete handoff before contacting the server", async () => {
+    lastHandoffBody = null;
+    const res = await roomRpc("tools/call", { name: "send_to_bot", arguments: {
+      bot_id: "bot-helper", brief: "", request_key: "ship-2",
+    } });
+    expect(res.result.isError).toBe(true);
+    expect(res.result.content[0].text).toContain("bot_id, a complete brief and request_key");
+    expect(lastHandoffBody).toBeNull();
   });
 
   it("keeps the documented snake_case key when both spellings arrive", async () => {
