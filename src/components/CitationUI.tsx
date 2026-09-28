@@ -29,7 +29,7 @@ function CitationEditor({
   onCancel,
 }: {
   citation: CitationAttachment;
-  point: Point;
+  point?: Point;
   onSave: (citation: CitationAttachment) => void;
   onCancel: () => void;
 }) {
@@ -37,7 +37,16 @@ function CitationEditor({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [comment, setComment] = useState(citation.comment ?? "");
   const tooLong = comment.length > CITATION_MAX_COMMENT_LENGTH;
-  useLayoutEffect(() => { if (ref.current) place(ref.current, point); }, [point]);
+  useLayoutEffect(() => {
+    const editor = ref.current;
+    if (!editor) return;
+    const input = point ? null : document.querySelector<HTMLTextAreaElement>('[data-tour="composer"] textarea');
+    const rect = input?.getBoundingClientRect();
+    place(editor, point ?? {
+      left: rect ? rect.left + (rect.width - editor.offsetWidth) / 2 : 8,
+      top: rect ? rect.top - editor.offsetHeight - 8 : 8,
+    });
+  }, [point]);
   useEffect(() => { inputRef.current?.focus(); }, []);
   return createPortal(
     <div
@@ -202,7 +211,6 @@ export function CitationBadge({
   if (editing && onChange) {
     return <CitationEditor
       citation={citation}
-      point={point}
       onCancel={() => { setEditing(false); restoreTriggerFocus(); }}
       onSave={(next) => { onChange(next); setEditing(false); restoreTriggerFocus(); }}
     />;
