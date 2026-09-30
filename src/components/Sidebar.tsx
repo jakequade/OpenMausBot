@@ -107,6 +107,7 @@ import { botShowsUnread } from "@/lib/bot-unread";
 import { attentionJumpAction, AttentionThreadRows, crossBotAttentionThreads, SidebarBotActivity, sidebarBotActivityTasks } from "./SidebarBotActivity";
 import { SidebarAttentionPanel } from "./SidebarAttentionPanel";
 import { ShortcutHint } from "./ShortcutHint";
+import { citationPreviewText } from "@/lib/citations";
 
 const SECTION_LABEL_KEYS: Record<string, LocaleKey> = {
   [PINNED_SECTION_ID]: "sidebar.section.pinned",
@@ -140,7 +141,7 @@ function preview(bot: Bot): string {
   if (last.kind === "screen") return t("sidebar.preview.screenFrame");
   const peer = peerLine(last);
   if (peer) return `${peer.name}: ${peer.body}`;
-  return last.text ?? "";
+  return citationPreviewText(last.text ?? "");
 }
 
 interface MenuState {
@@ -163,8 +164,9 @@ function groupPreview(group: Group, bots: Bot[]): string {
     : last.kind === "goal.run" && last.goalRun
       ? sidebarGoalRunPreview(last.goalRun)
       : (last.text ?? "");
-  if (last.role === "user") return t("sidebar.preview.you", { text });
-  return last.from ? `${last.from.name}: ${text}` : text;
+  const readable = citationPreviewText(text);
+  if (last.role === "user") return t("sidebar.preview.you", { text: readable });
+  return last.from ? `${last.from.name}: ${readable}` : readable;
 }
 
 /** A small member stack identifies a group without turning it into a card. */
