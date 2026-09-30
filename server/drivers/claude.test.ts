@@ -7,13 +7,14 @@
 // cannot exec, and the broker is a unix socket. Both now go through
 // resolveCliSpawn / permissionSocketPath, so they run everywhere.
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { connect, createServer as createNetServer, type Socket } from "node:net";
+import { createServer as createHttpServer, type IncomingHttpHeaders } from "node:http";
+import { connect, createServer as createNetServer, type AddressInfo, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { DATA_DIR, ensureDirs, NATIVE_DIR } from "../config.ts";
+import { DATA_DIR, ensureDirs, instanceConfigs, NATIVE_DIR } from "../config.ts";
 import type { ProviderInstance } from "../contracts.ts";
 import { recordEvents, type EventRecorder } from "../testing/events.ts";
 import {
@@ -448,6 +449,46 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     await removeTempDir(scratch);
   });
 
+  // Security: a saved workspace Anthropic key was written over every Claude
+  // instance's environment, so a router instance's host received it as
+  // x-api-key beside the router's own Bearer token, or the turn went to the
+  // workspace URL instead of the router.
+  it.each([
+    ["without a workspace URL", { key: "sk-ant-workspace-secret" }],
+    ["with a workspace URL", { key: "sk-ant-workspace-secret", url: "http://127.0.0.1:9" }],
+  ])("sends a router instance's turn to its own host with only its own token (%s)", async (_label, anthropic) => {
+    const seen: IncomingHttpHeaders[] = [];
+    const router = createHttpServer((request, response) => {
+      seen.push(request.headers);
+      request.resume();
+      response.end("{}");
+    });
+    await new Promise<void>((resolve) => router.listen(0, "127.0.0.1", resolve));
+    try {
+      const base = `http://127.0.0.1:${(router.address() as AddressInfo).port}`;
+      const map = instanceConfigs({
+        anthropic,
+        instances: {
+          claude: { driver: "claudeAgent" },
+          router: { driver: "claudeAgent", environment: { ANTHROPIC_BASE_URL: base, ANTHROPIC_AUTH_TOKEN: "router-token" } },
+        },
+      });
+      // the workspace key still reaches the ordinary Claude instance
+      expect(map.claude!.environment).toMatchObject({ ANTHROPIC_API_KEY: "sk-ant-workspace-secret" });
+      process.env.FAKE_CLAUDE_ROUTER_PING = "1";
+      await create(undefined, map.router!.environment as Record<string, string>);
+      await instance.adapter.sendTurn({ threadId: "t-router", text: "hi", model: "claude-sonnet-5" });
+      await recorder.until((e) => e.type === "turn.completed");
+      expect(seen).toHaveLength(1);
+      expect(seen[0]!.authorization).toBe("Bearer router-token");
+      expect(seen[0]!["x-api-key"]).toBeUndefined();
+      expect(JSON.stringify(seen)).not.toContain("sk-ant-workspace-secret");
+    } finally {
+      delete process.env.FAKE_CLAUDE_ROUTER_PING;
+      await new Promise((resolve) => router.close(resolve));
+    }
+  });
+
   it("normalizes a full turn into the canonical event sequence", async () => {
     await create();
     const { turnId } = await instance.adapter.sendTurn({ threadId: "t-happy", text: "hi", model: "claude-sonnet-5" });
@@ -598,14 +639,14 @@ describe("ClaudeDriver turns (fake CLI)", () => {
 
   it("stops a guest's turn when the CLI kept a shell, and refuses one too old to confine it", async () => {
     await create(undefined, { FAKE_CLAUDE_VERSION: "2.1.284", FAKE_CLAUDE_KEEP_BASH: "1" });
-    await instance.adapter.sendTurn({ threadId: "t-kept", text: "hello", approvalMode: "ask", guestConfined: true });
+    await instance.adapter.sendTurn({ threadId: "t-kept", text: "hello", approvalMode: "ask", guestConfined: true, confinedWhy: "This routine was made before this update." });
     await recorder.until((e) => e.type === "turn.completed");
-    expect(JSON.stringify(recorder.events)).toContain("kept its shell");
+    expect(JSON.stringify(recorder.events)).toContain("kept its shell, so it can't run this turn. Update Claude Code. This routine was made before this update.");
     expect(recorder.events.find((e) => e.type === "turn.completed")).toMatchObject({ ok: false });
     await create(undefined, { FAKE_CLAUDE_VERSION: "2.1.250" });
     const refused = await instance.adapter.sendTurn({ threadId: "t-old", text: "hello", approvalMode: "ask", guestConfined: true })
       .then(() => recorder.until((e) => e.type === "turn.completed").then((event) => JSON.stringify(event) + JSON.stringify(recorder.events)), (error: unknown) => String(error));
-    expect(refused).toContain("too old to take a guest's request");
+    expect(refused).toContain("too old to run this turn without a shell");
   });
 
   it("keeps a workspace Anthropic key set on purpose while still dropping one from the parent env", async () => {

@@ -341,6 +341,9 @@ export const CLAUDE_FLAG_FLOORS = {
  * outside its own folder is refused outright, never asked. Probed against
  * Claude Code 2.1.284 in `default` mode: without this, a built-in list of
  * "read-only" Bash commands runs unasked, and `xargs head` reads any file. */
+/** A refusal of a confined turn, and why it is confined (SendTurnInput.confinedWhy). */
+const withWhy = (refusal: string, why: string | undefined) => why ? `${refusal} ${why}` : refusal;
+
 export const GUEST_CLAUDE_TOOLS = ["Read", "Grep", "Glob", "Edit", "Write", "WebSearch"] as const;
 /** Tools a guest's session must never report in its init frame. */
 const GUEST_FORBIDDEN_TOOLS = new Set(["Bash", "PowerShell", "WebFetch", "BashOutput", "KillShell", "KillBash", "NotebookEdit", "Task", "Agent"]);
@@ -1299,7 +1302,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         }
       }
       if (turn.guestConfined && !claudeCliSupports(cliVersion, "--restricted")) {
-        throw new Error("This Claude Code is too old to take a guest's request on this Cloud without a shell. Update Claude Code.");
+        throw new Error(withWhy("This Claude Code is too old to run this turn without a shell. Update Claude Code.", turn.confinedWhy));
       }
       const isolated = !inheritsUserConfig(turnEnvironment);
       if (isolated) {
@@ -1781,7 +1784,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
               // a CLI that kept a command-running tool is stopped here.
               const tools: unknown[] = Array.isArray(o.tools) ? o.tools : [];
               if (session.turn?.input.guestConfined && (o.permissionMode !== "default" || tools.some((tool) => typeof tool === "string" && GUEST_FORBIDDEN_TOOLS.has(tool)))) {
-                emit({ ...base(threadId, currentTurnId()), type: "runtime.error", message: "This Claude Code kept its shell, so it can't take a guest's request on this Cloud. Update Claude Code." });
+                emit({ ...base(threadId, currentTurnId()), type: "runtime.error", message: withWhy("This Claude Code kept its shell, so it can't run this turn. Update Claude Code.", session.turn?.input.confinedWhy) });
                 session.closing = true;
                 stopSession(session);
                 break;

@@ -83,7 +83,8 @@ import { cn } from "@/lib/cn";
 import { activeLocale, t } from "@/lib/i18n";
 import { COMPACT_BUBBLE } from "@/lib/compact-chip";
 import { useFocusMessage } from "@/lib/focus-message";
-import { groupTranscript, isRecoveryActivity } from "@/lib/activity-runs";
+import { groupTranscript, isStatusActivity } from "@/lib/activity-runs";
+import { StatusActivityRow } from "@/components/StatusActivityRow";
 import { ActivityRun } from "./ActivityRun";
 import { TurnNarrationRun } from "./TurnNarrationRun";
 import { webhookMessageView } from "@/lib/webhook-message";
@@ -822,14 +823,7 @@ const MessagesList = memo(function MessagesList({
               );
             }
             case "activity": {
-              if (isRecoveryActivity(m)) {
-                return (
-                  <div role="status" className="flex w-fit max-w-full items-start gap-2 rounded-xl border border-hairline/40 bg-panel px-3 py-2 text-[13px] text-ink-secondary">
-                    <RefreshCw size={13} aria-hidden="true" className="mt-0.5 shrink-0" />
-                    <span className="min-w-0 break-words">{m.tool?.name.slice(9).trim()}</span>
-                  </div>
-                );
-              }
+              if (isStatusActivity(m)) return <StatusActivityRow message={m} />;
               // a failed turn is an error, not a tool run — render it as one.
               // bot⇄bot comm chips and opened-thread chips stay because they
               // link to another conversation.

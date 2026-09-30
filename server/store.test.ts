@@ -2023,6 +2023,19 @@ describe("Store task working folder", () => {
     expect(store.pinTaskCwd(bot.id, next.threadId)).toBe("/tmp/project-b");
   });
 
+  it("pins a private-only conversation to its own folder when it first runs, and never moves one that already ran elsewhere", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    store.patchBot(bot.id, { cwd: "/tmp/project-a" });
+    const ran = bot.threadId;
+    expect(store.pinTaskCwd(bot.id, ran, "/tmp/private-old")).toBe("/tmp/project-a");
+    const fresh = store.createTask(bot.id, "fresh")!;
+    expect(store.pinTaskCwd(bot.id, fresh.threadId, "/tmp/private-fresh", { privateOnly: true })).toBe("/tmp/private-fresh");
+    // A conversation that already ran in the project folder stays there.
+    expect(store.pinTaskCwd(bot.id, ran, "/tmp/private-old", { privateOnly: true })).toBe("/tmp/project-a");
+    expect(store.taskByThread(bot.id, ran)?.cwd).toBe("/tmp/project-a");
+  });
+
   it("pins the default (null) when the bot has no folder, so a later folder can't move a live session", () => {
     const store = new Store(selection);
     const bot = store.createBot();

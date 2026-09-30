@@ -78,6 +78,12 @@
 //                      total already counts the earlier turns. The fake saves
 //                      its running cost per session id here, and a --resume
 //                      launch starts from it.
+//   FAKE_CLAUDE_ROUTER_PING 1: before each turn's reply, send one POST to
+//                      $ANTHROPIC_BASE_URL/v1/messages carrying the headers
+//                      the real CLI derives from its env (ANTHROPIC_AUTH_TOKEN
+//                      as a Bearer token, ANTHROPIC_API_KEY as x-api-key), so a
+//                      test's stub router sees what a real turn would send.
+//                      Nothing is sent when ANTHROPIC_BASE_URL is unset.
 //   FAKE_CLAUDE_RESUMED_API_ERROR 1: a --resume launch plays its first turn
 //                      the `api-error` way — an error result with no cost
 //                      figure — and its later turns normally.
@@ -387,6 +393,20 @@ const playTurn = (prompt: JsonValue) => {
       process.env.FAKE_CLAUDE_DUMP,
       JSON.stringify({ pid: process.pid, argv, env: process.env, cwd: process.cwd(), prompt, systemPrompt, mcpConfig, settings, settingsMode }, null, 2),
     );
+  }
+
+  if (process.env.FAKE_CLAUDE_ROUTER_PING === "1" && process.env.ANTHROPIC_BASE_URL) {
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (process.env.ANTHROPIC_AUTH_TOKEN) headers.authorization = `Bearer ${process.env.ANTHROPIC_AUTH_TOKEN}`;
+    if (process.env.ANTHROPIC_API_KEY) headers["x-api-key"] = process.env.ANTHROPIC_API_KEY;
+    // Synchronous on purpose: the turn's frames follow the request, as they do
+    // for the real CLI, and this fake's turn loop is synchronous.
+    spawnSync(process.execPath, [
+      "-e",
+      "fetch(process.argv[1], { method: 'POST', headers: JSON.parse(process.argv[2]), body: '{}' }).then((r) => r.text(), () => {})",
+      `${process.env.ANTHROPIC_BASE_URL.replace(/\/+$/u, "")}/v1/messages`,
+      JSON.stringify(headers),
+    ], { stdio: "ignore", timeout: 5_000 });
   }
 
   // A resumed session the CLI no longer has: it exits before any `init`
