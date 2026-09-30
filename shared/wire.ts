@@ -74,6 +74,8 @@ export interface TaskOpenedBy {
   botId: string;
   name: string;
   delegationId?: string;
+  /** Durable identity of a one-way send, scoped to its source conversation. */
+  oneWaySend?: { sourceThreadId: string; requestKey: string };
   /** What kind of conversation the opener made this: "pair" is the one
    * durable conversation between two bots; "work" closes itself once its
    * result has been reported. */
@@ -402,6 +404,8 @@ export interface WireMessage {
     claudeUpdate?: boolean;
     /** Provider item identity, scoped to the owning turn. */
     itemId?: string;
+    /** Terminal one-way handoff notice identity for restart recovery. */
+    handoffId?: string;
     /** Whether the harness captured the full redacted result. Private
      * server-local spill paths are not exposed to clients. */
     fullResult?: boolean;

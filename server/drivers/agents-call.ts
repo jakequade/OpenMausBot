@@ -533,6 +533,32 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     }) });
     return { text: JSON.stringify(r), ...(r.error ? { isError: true } : {}) };
   }
+  if (name === "send_to_bot") {
+    const botId = String(args.bot_id ?? "").trim();
+    const title = String(args.title ?? "").trim();
+    const message = String(args.message ?? "").trim();
+    const requestKey = String(args.request_key ?? "").trim();
+    if (!botId || !title || !message || !/^[\w-]{1,100}$/.test(requestKey)) {
+      return { text: "send_to_bot needs bot_id, title, message and a short request_key (letters, digits, underscores or hyphens).", isError: true };
+    }
+    if (botId === context.botId) {
+      return { text: "send_to_bot is cross-bot only. Use start_thread to send independent work to yourself.", isError: true };
+    }
+    const r = await api("/api/internal/threads", { method: "POST", body: JSON.stringify({
+      fromBotId: context.botId, fromThreadId: context.threadId, toBotId: botId,
+      title, message, requestKey, depth: context.depth, oneWay: true,
+    }) });
+    if (r.error) return { text: `Couldn't send to that bot: ${String(r.error)}`, isError: true };
+    if (r.replayed !== true) turn.threadsOpenedThisTurn += 1;
+    const destination = `@${String(r.botName ?? "that bot")} in #${String(r.title ?? title)} [thread id: ${String(r.threadId ?? "")}]`;
+    if (r.replayed === true) return { text: `Already sent to ${destination}. Its result stays in that thread; nothing there will resume you.` };
+    const state = r.approvalRequired === true
+      ? `Send to ${destination} is pending approval. The person's approval card appears after this turn ends; dispatch starts once approved.`
+      : r.state === "queued"
+        ? `Send to ${destination} is queued ${ordinal(Number(r.position) || 1)} for a free slot and can dispatch after this turn ends.`
+        : `Send to ${destination} is pending until this turn ends, then dispatch starts.`;
+    return { text: `${state} Its result stays in that thread; nothing there will resume you.` };
+  }
   if (name === "list_bots") {
     const r = await api(`/api/internal/agents?self=${encodeURIComponent(BOT_ID)}`);
     const bots = (r.bots as Array<Json>) ?? [];

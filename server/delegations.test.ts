@@ -122,6 +122,16 @@ describe("queueDelegation", () => {
     expect(_pendingCount(from.threadId)).toBe(0);
   });
 
+  it("lets a cross-bot send start a new ownership chain at the depth cap", () => {
+    const result = queueDelegation(commsBus, from, {
+      toBotId: target.id,
+      message: "own this",
+      depth: 1,
+      oneWay: true,
+    }, 1);
+    expect(result.result).toBe("ok");
+  });
+
   it("rejects when the target bot does not exist", () => {
     const result = queueDelegation(commsBus, from, {
       toBotId: "ghost",
@@ -1151,12 +1161,63 @@ describe("busy waits and expiry", () => {
     expect(findDelegationReceipt("bulk-3")).toBeNull(); // oldest pruned
   });
 
+  it.each([false, true])("recovers a one-way failure notice after a restart (notice already written: %s)", async (noticeWritten) => {
+    const opened = store.createTask(target.id, "Owned work", false)!;
+    const queued = queueDelegation(commsBus, from, {
+      toBotId: target.id, message: "check this", depth: 0,
+      targetThreadId: opened.threadId, oneWay: true,
+    }, 1);
+    recordDelegationReceipt({
+      id: queued.id!, sourceThreadId: from.threadId, toBotId: target.id,
+      toBotName: target.name, status: "dropped", result: "access revoked",
+    });
+    if (noticeWritten) store.appendMessage(opened.threadId, {
+      role: "bot", kind: "activity",
+      tool: { name: "Send failed — access revoked", ok: false, handoffId: queued.id },
+    });
+    _resetPending();
+    _loadPending();
+    const runTarget = vi.fn();
+    drainDelegations(commsBus, approvalBus, from.threadId, runTarget);
+    await waitFor(() => _pendingCount(from.threadId) === 0);
+    expect(runTarget).not.toHaveBeenCalled();
+    expect(store.messagesFor(opened.threadId).filter((message) => message.tool?.handoffId === queued.id)).toHaveLength(1);
+  });
+
+  it("does not treat a persisted inbound line as a completed one-way turn", async () => {
+    const opened = store.createTask(target.id, "Owned work", false)!;
+    const queued = queueDelegation(commsBus, from, {
+      toBotId: target.id, message: "check this", depth: 0,
+      targetThreadId: opened.threadId, oneWay: true,
+    }, 1);
+    store.appendMessage(opened.threadId, {
+      role: "user", kind: "text", text: "check this",
+      peerAsk: { botId: from.id, name: from.name },
+    });
+    _resetPending();
+    _loadPending();
+    const runTarget = vi.fn();
+    drainDelegations(commsBus, approvalBus, from.threadId, runTarget);
+    await waitFor(() => runTarget.mock.calls.length === 1);
+    expect(runTarget.mock.calls[0]?.[5]).toBe(queued.id);
+  });
+
   it("writes a dropped receipt for every handoff a failed turn discards", async () => {
     const queued = queueDelegation(commsBus, from, { toBotId: target.id, message: "never runs", depth: 0 }, 1);
     const { discardDelegations } = await import("./delegations.ts");
     discardDelegations(commsBus, from.threadId);
     expect(_pendingCount(from.threadId)).toBe(0);
     expect(findDelegationReceipt(queued.id!)).toMatchObject({ status: "dropped" });
+  });
+
+  it("keeps an accepted one-way send when its source turn fails", () => {
+    const opened = store.createTask(target.id, "Owned work", false)!;
+    queueDelegation(commsBus, from, {
+      toBotId: target.id, message: "keep running", depth: 0,
+      targetThreadId: opened.threadId, oneWay: true,
+    }, 1);
+    discardDelegations(commsBus, from.threadId);
+    expect(_pendingCount(from.threadId)).toBe(1);
   });
 
   it("expires a handoff nobody could take within 24 hours, and wakes the delegator", async () => {

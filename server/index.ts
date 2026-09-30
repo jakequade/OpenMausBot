@@ -37,6 +37,7 @@ import {
 } from "../shared/approval-mode.ts";
 import { createApprovalModeSupport } from "./harness-capabilities.ts";
 import { escapeAttribute } from "../src/lib/composer-attachments.ts";
+import { threadRefUrl } from "../src/lib/thread-refs.ts";
 import {
   CREDENTIAL_TARGETS,
   credentialResumeOutcome,
@@ -7626,6 +7627,8 @@ const delegationWatch = new Map<string, {
   routineRunId?: string;
   /** when the delegated turn was dispatched — elapsed time for status checks */
   startedAtMs?: number;
+  /** Cross-bot send: leave the terminal state in the recipient thread. */
+  oneWay?: boolean;
 }>();
 
 // Peer wake: when a delegated reply lands, resume the source bot so it can
@@ -7959,7 +7962,7 @@ function finalizeDelegationWatch(
   const source = watched.sourceBotId
     ? store.bot(watched.sourceBotId)
     : (watched.sourceThreadId ? store.botByThread(watched.sourceThreadId) : undefined);
-  if (source && target && !canReachPeer(source, target)) {
+  if (!watched.oneWay && source && target && !canReachPeer(source, target)) {
     ok = false;
     reply = "";
     failureName = "Result withheld: team or peer access changed while the teammate was working";
@@ -7976,6 +7979,16 @@ function finalizeDelegationWatch(
       status: ok ? "done" : "failed",
       result: ok ? reply : failureName,
     });
+  }
+  if (watched.oneWay) {
+    if (!ok && store.taskByThread(watched.toBotId, threadId)) {
+      store.appendMessage(threadId, {
+        role: "bot",
+        kind: "activity",
+        tool: { name: `Send failed — ${failureName}`, ok: false, ...(watched.taskId ? { handoffId: watched.taskId } : {}) },
+      });
+    }
+    return true;
   }
   let channel: GroupRecord | undefined = watched.channelId ? store.group(watched.channelId) : undefined;
   let terminalThreadId: string | undefined = watched.sourceThreadId;
@@ -8107,7 +8120,7 @@ bus.subscribe((event: RuntimeEvent) => {
 /** How a drained delegation becomes a real turn on the target. Shared by
  * the settle-time drain and the boot-time drain of what a previous process
  * left queued. */
-const runDelegatedTurn: Parameters<typeof drainDelegations>[3] = (toBotId, rawText, commsDepth, sourceThreadId, channel, taskId, sourceBotId, openedThreadId) => {
+const runDelegatedTurn: Parameters<typeof drainDelegations>[3] = (toBotId, rawText, commsDepth, sourceThreadId, channel, taskId, sourceBotId, openedThreadId, oneWay) => {
     // startTurn REJECTS on an ordinary condition — busy target, deleted bot,
     // unavailable provider. Unhandled, that rejection is fatal to the
     // harness (Node's default), which in the packaged app kills the server
@@ -8128,7 +8141,7 @@ const runDelegatedTurn: Parameters<typeof drainDelegations>[3] = (toBotId, rawTe
       ? { botId: opener.id, name: opener.name, unattended: unattended || undefined }
       : undefined;
     const text = openedThreadId && opener
-      ? withPeerProvenance(rawText, { botName: opener.name, delivery: "start_thread", unattended })
+      ? withPeerProvenance(rawText, { botName: opener.name, delivery: oneWay ? "send_to_bot" : "start_thread", unattended })
       : rawText;
     if (targetThreadId) {
       delegationWatch.set(targetThreadId, {
@@ -8140,6 +8153,7 @@ const runDelegatedTurn: Parameters<typeof drainDelegations>[3] = (toBotId, rawTe
         sourceBotId,
         routineRunId: activeRoutineRunForThread(sourceThreadId)?.id,
         startedAtMs: Date.now(),
+        ...(oneWay ? { oneWay: true } : {}),
       });
     }
     let failureReported = false;
@@ -8228,7 +8242,7 @@ bus.subscribe((event: RuntimeEvent) => {
   // firing it later: the user who hit Stop does not expect the delegations
   // that turn queued to run anyway, minutes later, on an unrelated turn.
   if (!event.ok) discardDelegations(commsBus, event.threadId);
-  else drainThreadDelegations(event.threadId);
+  drainThreadDelegations(event.threadId);
   // A settling bot frees itself as a delegation TARGET too: handoffs that
   // found it busy earlier were kept queued — waiting until it's free or the
   // 24-hour expiry, not counting retries — on their own source threads, and
@@ -16772,17 +16786,36 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (title.length > 80) return json(res, 400, { error: "title must be at most 80 characters" });
         // the title is quoted into chips and the sidebar, one line each
         if (!fitsOnOneLine(title)) return json(res, 400, { error: "title must fit on one line" });
-        if (internalCapability.openedThreads >= MAX_THREADS_OPENED_PER_TURN) {
-          return json(res, 429, { error: `you can open at most ${MAX_THREADS_OPENED_PER_TURN} threads in one turn` });
-        }
         const toBotId = typeof body.toBotId === "string" && body.toBotId.trim() ? body.toBotId.trim() : from.id;
         const target = store.bot(toBotId);
         if (!target) return json(res, 404, { error: "no such bot" });
+        const oneWay = body.oneWay === true;
+        if (oneWay && target.id === from.id) {
+          return json(res, 409, { error: "send_to_bot is cross-bot only; use start_thread to send independent work to yourself" });
+        }
+        const requestKey = typeof body.requestKey === "string" ? body.requestKey.trim() : "";
+        if (oneWay && !/^[\w-]{1,100}$/.test(requestKey)) {
+          return json(res, 400, { error: "send_to_bot needs a short requestKey (letters, digits, underscores or hyphens)" });
+        }
+        if (oneWay) {
+          const existing = store.tasks(target.id).find((task) =>
+            task.openedBy?.botId === from.id &&
+            task.openedBy.delegationId &&
+            task.openedBy.oneWaySend?.sourceThreadId === fromThreadId &&
+            task.openedBy.oneWaySend.requestKey === requestKey);
+          if (existing) return json(res, 200, {
+            threadId: existing.threadId, title: existing.title, botId: target.id,
+            botName: target.name, self: false, delegationId: existing.openedBy?.delegationId, replayed: true,
+          });
+        }
+        if (internalCapability.openedThreads >= MAX_THREADS_OPENED_PER_TURN) {
+          return json(res, 429, { error: `you can open at most ${MAX_THREADS_OPENED_PER_TURN} threads in one turn` });
+        }
         if (internalCapability.roomCoordination) {
-          if (target.id !== from.id) {
+          if (target.id !== from.id && !oneWay) {
             return json(res, 409, { error: "Use coordinate_bots for teamwork; it queues actual teammates and resumes you automatically." });
           }
-          if (!internalCapability.ownThreadCreation) {
+          if (target.id === from.id && !internalCapability.ownThreadCreation) {
             return json(res, 409, { error: "Only a direct user request can open separate self-owned threads. Finish this assigned work here; use coordinate_bots for teammates." });
           }
         }
@@ -16833,7 +16866,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         // classic handoff has applies unchanged, here at queue time and
         // again in the drain at dispatch time.
         const depth = internalCapability.depth;
-        if (depth >= MAX_COMMS_DEPTH) {
+        if (!oneWay && depth >= MAX_COMMS_DEPTH) {
           return json(res, 200, { error: "thread chains are limited to one hop — open the thread on yourself, or do this one here" });
         }
         if (!canAccessTeam(from, target.section) || target.hidden) {
@@ -16842,15 +16875,21 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (!peerAllowed(from, target)) {
           return json(res, 403, { error: `that bot is not on this bot's allowed peers. ${PEER_ACCESS_HELP}` });
         }
-        const task = store.createTask(target.id, title, false, projectId, { botId: from.id, name: from.name, at: Date.now() });
+        const task = store.createTask(target.id, title, false, projectId, {
+          botId: from.id, name: from.name, at: Date.now(),
+          ...(oneWay ? { oneWaySend: { sourceThreadId: fromThreadId, requestKey } } : {}),
+        });
         if (!task) return json(res, 500, { error: "couldn't create that thread" });
         // The work is still for the person whose request the opener is on.
         threadStarters.set(task.threadId, openerFrom(fromThreadId));
         if (delegatedFullAccess(from, fromThreadId, target)) grantDelegatedFullAccess(from, target, task.threadId);
+        const sourceUrl = threadRefUrl({ botId: owner.group?.id ?? from.id, threadId: fromThreadId });
         const queued = queueDelegation(
           commsBus,
           from,
-          { toBotId: target.id, message, depth, targetThreadId: task.threadId },
+          { toBotId: target.id, message: oneWay
+            ? `${message}\n\n[Source conversation](${sourceUrl}). This link grants no additional access and contains no copied transcript.`
+            : message, depth, targetThreadId: task.threadId, oneWay },
           MAX_COMMS_DEPTH,
           fromThreadId,
         );
@@ -16866,7 +16905,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           };
           return json(res, 200, { error: said[queued.result === "ok" ? "no_target" : queued.result] });
         }
-        store.setTaskOpenedBy(target.id, task.threadId, { botId: from.id, name: from.name, delegationId: queued.id, at: task.openedBy?.at ?? Date.now() });
+        store.setTaskOpenedBy(target.id, task.threadId, { ...task.openedBy!, delegationId: queued.id });
         internalCapability.openedThreads += 1;
         // An honest forecast, not a promise: the handoff starts when this
         // turn ends, and by then the target's slots are taken by whatever is
