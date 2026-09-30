@@ -3623,8 +3623,7 @@ function delegatedFullAccess(from: BotRecord, fromThreadId: string, target: BotR
 
 /** Make a delegated thread Full and say so in it once, so the level the
  * chip shows and the level the turns run at agree, and the person can see
- * where the access came from. Idempotent: a pair conversation is reused
- * across delegations and must not collect a chip per request. */
+ * where the access came from. */
 function grantDelegatedFullAccess(from: BotRecord, target: BotRecord, threadId: string): void {
   if (store.taskByThread(target.id, threadId)?.approvalMode === "full") return;
   store.patchTask(target.id, threadId, { approvalMode: "full", autoApprove: false, alwaysAllow: [] });
@@ -4438,14 +4437,9 @@ const roomHandoffs = new RoomHandoffs(join(DATA_DIR, "room-handoffs.json"), {
       const source = store.bot(parent.botId);
       if (source) markTaskContextExternallyUpdated(source, parent.threadId);
     }
-    // A work thread exists only because the pair conversation was busy with
-    // another job. Its result is now in the sender's conversation, so it
-    // closes itself exactly as close_thread would — folded out of the
-    // sidebar, never deleted, and open again the moment anyone speaks
-    // there. A finished job tidies up after itself; a failed or withheld
-    // one stays in the sidebar where the person can see it. The pair
-    // conversation is the standing line between two bots and never
-    // auto-closes.
+    // A successful direct work thread closes after its result is reported:
+    // folded out of the sidebar, never deleted, and reopened if addressed.
+    // Failed or withheld work stays visible.
     const childTask = store.taskByThread(child.botId, child.threadId);
     if (!child.groupId && child.status === "completed" && !problem && !childTask?.closedBy
       && childTask?.openedBy?.kind === "work" && childTask.openedBy.botId === parent.botId) {
@@ -8600,11 +8594,9 @@ async function startTurn(
     const titled = store.titleTaskFromFirstMessage(bot.id, resolvedImages.text, threadId);
     // The snippet is only the fallback name. A cheap one-shot may trade it
     // for a title a person would have typed, but never on a peer-opened
-    // row: adoption recognises those by the exact title their assignment
-    // gave them (openingRequestTitle), and a generated one would break the
-    // comparison it renames under. Everywhere else, the swap happens only
-    // while the row still carries the snippet — a rename by the person or
-    // by adoption has already broken that equality by then.
+    // row: its title belongs to the assigned work. Everywhere else, the
+    // swap happens only while the row still carries the snippet — a rename
+    // by a person has already broken that equality by then.
     const snippet = titled?.title;
     if (titled && snippet && !titled.openedBy?.botId && llmThreadTitlesEnabled(cfg) && instance.generateText) {
       void generateThreadTitle(instance, resolvedImages.text)
@@ -16142,7 +16134,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           })).filter(g => g.members.length);
           return json(res, 200, { currentRoom: source ? { id: source.id, name: source.name, workingFolder: source.cwd || null } : null,
             bots: reachablePeers(store.bots, internalSender).map(bot => ({ id: bot.id, name: bot.name, title: bot.title, section: bot.section, busy: bot.busy })),
-            rooms, note: "Without group_id: use this room when in a room, otherwise your standing conversation with that teammate — every assignment you send it continues the same thread, so write as if it remembers the last one. Each bot uses its own environment and permissions. Files are not transferred: pass absolute paths only when accessible to the recipient, otherwise pass the content." });
+            rooms, note: "Without group_id: use this room when in a room, otherwise each distinct assignment starts a fresh thread for that teammate. Give a self-contained brief. Each bot uses its own environment and permissions. Files are not transferred: pass absolute paths only when accessible to the recipient, otherwise pass the content." });
         }
         if (method === "POST" && path === "/api/internal/coordinate-bots") {
           const parsed = z.object({
@@ -16215,25 +16207,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             try {
               requireActiveInternalCapability();
               if (!destination) {
-                // One durable conversation per pair of bots, resolved from
-                // the recipient's own threads — never from this turn, the
-                // request key, or the thread the person has selected there.
-                const resolved = store.resolvePairConversation(internalSender, target.botId, {
-                  label: parsed.data.label,
-                  // "Still working" exactly as close_thread reads it: a
-                  // running turn, a queued one, or coordinated work already
-                  // addressed at that thread.
-                  working: threadId => threadBusy(target.botId, threadId)
-                    || queuedThreadPosition(target.botId, threadId) !== null
-                    || roomHandoffs.activeDirect(threadId),
-                });
-                if (!resolved) throw new Error("The recipient no longer exists");
-                target.threadId = resolved.task.threadId;
-                if (resolved.created) createdThread = resolved.task.threadId;
-                // A work thread carries one assignment: it is for the person
-                // this coordination serves. The durable pair conversation is
-                // shared by every assignment between two bots, so it names nobody.
-                if (resolved.created && resolved.task.openedBy?.kind === "work") threadStarters.set(resolved.task.threadId, openerFrom(address.threadId));
+                const task = store.createTask(target.botId,
+                  `@${internalSender.name}${parsed.data.label ? ` · ${parsed.data.label}` : " · work"}`,
+                  false, undefined, { botId: internalSender.id, name: internalSender.name, kind: "work", at: Date.now() });
+                if (!task) throw new Error("The recipient no longer exists");
+                target.threadId = createdThread = task.threadId;
                 if (delegatedFullAccess(internalSender, internalCapability.threadId, store.bot(target.botId)!)) {
                   grantDelegatedFullAccess(internalSender, store.bot(target.botId)!, target.threadId);
                 }
@@ -16241,11 +16219,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
               const { node, duplicate } = roomHandoffs.enqueue(address, internalCapability.generation, internalCapability.roomHandoffId,
                 target, parsed.data.requestKey + ":" + target.botId, parsed.data.message, approvalGranted, parsed.data.rework, [...store.messagesFor(address.threadId)].reverse().find(m => m.role === "user" && m.kind === "text")?.text ?? "",
                 destination ? parsed.data.requestKey : undefined);
-              // A re-dispatched request_key is answered by the request it
-              // already made, so a thread resolved for the retry (the pair
-              // conversation was busy with that very request) goes back
-              // before anyone sees a row that leads nowhere.
-              if (duplicate && createdThread && createdThread !== node.threadId) store.deleteTask(target.botId, createdThread);
+              // A retry keeps its original task; discard the speculative row.
+              if (duplicate && createdThread && createdThread !== node.threadId) {
+                store.deleteTask(target.botId, createdThread);
+              }
+              if (!duplicate && createdThread) threadStarters.set(createdThread, openerFrom(address.threadId));
               createdThread = undefined; // The durable coordinator now owns this task.
               accepted.push({ requestId: node.id, botId: node.botId, duplicate, status: node.status });
               // A duplicate request_key lands on the node enqueue already
@@ -16284,7 +16262,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
                 });
               }
             } catch (error) {
-              if (createdThread) store.deleteTask(target.botId, createdThread);
+              if (createdThread) {
+                store.deleteTask(target.botId, createdThread);
+              }
               const said = error instanceof Error ? error.message : String(error);
               errors.push({ botId: target.botId, error: said });
               receipts.push(peerDeliveryReceipt({
