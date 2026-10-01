@@ -160,4 +160,3 @@ final class UpdatesTests: XCTestCase {
         XCTAssertEqual(row.line, "Visible before the digest")
     }
 }
-

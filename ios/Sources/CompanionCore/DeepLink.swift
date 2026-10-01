@@ -31,4 +31,3 @@ public enum CompanionDeepLink: Equatable, Sendable {
         return .chat(threadId: threadId)
     }
 }
-
