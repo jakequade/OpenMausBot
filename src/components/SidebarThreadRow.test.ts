@@ -328,21 +328,21 @@ describe("orderedThreadList", () => {
     ...over,
   });
 
-  it("pins first, then newest update, and keeps equal stamps in stored order", () => {
+  it("pins first, then newest user message, and keeps equal stamps in stored order", () => {
     const ordered = orderedThreadList([
-      task("old", { updatedAt: 10 }),
-      task("pinned-old", { pinned: true, updatedAt: 5 }),
-      task("new", { updatedAt: 30 }),
-      task("pinned-new", { pinned: true, updatedAt: 20 }),
-      task("tie-b", { updatedAt: 10 }),
+      task("old", { lastUserMessageAt: 10 }),
+      task("pinned-old", { pinned: true, lastUserMessageAt: 5 }),
+      task("new", { lastUserMessageAt: 30 }),
+      task("pinned-new", { pinned: true, lastUserMessageAt: 20 }),
+      task("tie-b", { lastUserMessageAt: 10 }),
     ]);
     expect(ordered.map((item) => item.threadId)).toEqual(["pinned-new", "pinned-old", "new", "old", "tie-b"]);
   });
 
   it("does not let waiting or working outrank a newer idle thread", () => {
     const ordered = orderedThreadList([
-      task("waiting", { updatedAt: 1, activity: "waiting-on-you" }),
-      task("fresh", { updatedAt: 5 }),
+      task("waiting", { lastUserMessageAt: 1, activity: "waiting-on-you" }),
+      task("fresh", { lastUserMessageAt: 5 }),
     ]);
     expect(ordered.map((item) => item.threadId)).toEqual(["fresh", "waiting"]);
   });
@@ -353,6 +353,14 @@ describe("orderedThreadList", () => {
       task("created-late", { createdAt: 4 }),
     ]);
     expect(ordered.map((item) => item.threadId)).toEqual(["created-late", "created-early"]);
+  });
+
+  it("moves a thread only for a person's message", () => {
+    const ordered = orderedThreadList([
+      task("bot-active", { updatedAt: 100, lastUserMessageAt: 10 }),
+      task("user-active", { updatedAt: 80, lastUserMessageAt: 50 }),
+    ]);
+    expect(ordered.map((item) => item.threadId)).toEqual(["user-active", "bot-active"]);
   });
 });
 
@@ -418,13 +426,13 @@ describe("archived threads", () => {
   }));
   it("keeps the six newest open threads, and does not spend those slots on a pin", () => {
     const rows = [
-      { threadId: "old-open", title: "Old", createdAt: 1, updatedAt: 1 },
-      { threadId: "newer", title: "Newer", createdAt: 2, updatedAt: 50 },
-      { threadId: "mid", title: "Mid", createdAt: 3, updatedAt: 40 },
-      { threadId: "also", title: "Also", createdAt: 4, updatedAt: 30 },
-      { threadId: "fourth", title: "Fourth", createdAt: 5, updatedAt: 20 },
-      { threadId: "fifth", title: "Fifth", createdAt: 6, updatedAt: 15 },
-      { threadId: "sixth", title: "Sixth", createdAt: 7, updatedAt: 12 },
+      { threadId: "old-open", title: "Old", createdAt: 1, lastUserMessageAt: 1 },
+      { threadId: "newer", title: "Newer", createdAt: 2, lastUserMessageAt: 50 },
+      { threadId: "mid", title: "Mid", createdAt: 3, lastUserMessageAt: 40 },
+      { threadId: "also", title: "Also", createdAt: 4, lastUserMessageAt: 30 },
+      { threadId: "fourth", title: "Fourth", createdAt: 5, lastUserMessageAt: 20 },
+      { threadId: "fifth", title: "Fifth", createdAt: 6, lastUserMessageAt: 15 },
+      { threadId: "sixth", title: "Sixth", createdAt: 7, lastUserMessageAt: 12 },
       { threadId: "pinned-closed", title: "Pinned", createdAt: 8, updatedAt: 2, pinned: true, closedBy: { botId: "b", name: "Scout", at: 2 } },
     ];
     expect(visibleSidebarThreads(rows, "none").map((task) => task.threadId)).toEqual([

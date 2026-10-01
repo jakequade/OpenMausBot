@@ -144,6 +144,7 @@ export interface WireTask {
   /** Epoch ms of the newest message, or createdAt when the thread has none.
    * Server-derived. Clients must not write it. */
   updatedAt?: number;
+  lastUserMessageAt?: number;
   /** When the person snoozed this thread. 0 means "until new activity" and
    * the store clears it the moment the thread wakes; a future epoch ms means
    * "until then" and reads treat an expired value as absent, so no timer or
@@ -657,6 +658,7 @@ export interface GroupTask {
   turnTimeoutMinutes?: number;
   /** Epoch ms of the newest message, or createdAt when the thread has none. */
   updatedAt?: number;
+  lastUserMessageAt?: number;
   /** The first message already drove a title attempt for this thread, so a
    * later one does not rename a room the person may have retitled. */
   titleFromFirstMessage?: true;

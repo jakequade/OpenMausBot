@@ -577,4 +577,18 @@ describe("independent bot task state", () => {
     const restarted = new Store(selection);
     expect(restarted.taskByThread(bot.id, task.threadId)?.updatedAt).toBe(message.at);
   });
+
+  it("tracks only person messages for thread ordering across restarts", () => {
+    const store = new Store(selection);
+    const bot = store.createBot({}, { seedMessages: false });
+    const task = store.createTask(bot.id, "Notes")!;
+    const at = task.createdAt;
+    store.appendMessage(task.threadId, { role: "bot", kind: "text", text: "Thinking", at: at + 10 });
+    store.appendMessage(task.threadId, { role: "user", kind: "text", text: "Peer", peerAsk: { botId: "peer", name: "Peer" }, at: at + 20 });
+    expect(store.taskByThread(bot.id, task.threadId)?.lastUserMessageAt).toBeUndefined();
+    store.appendMessage(task.threadId, { role: "user", kind: "text", text: "Hello", at: at + 30 });
+    store.appendMessage(task.threadId, { role: "bot", kind: "activity", text: "Working", at: at + 40 });
+    expect(store.taskByThread(bot.id, task.threadId)).toMatchObject({ lastUserMessageAt: at + 30, updatedAt: at + 40 });
+    expect(new Store(selection).taskByThread(bot.id, task.threadId)?.lastUserMessageAt).toBe(at + 30);
+  });
 });
