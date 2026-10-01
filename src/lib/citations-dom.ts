@@ -111,6 +111,12 @@ export function findCitationSource(document: Document, citation: CitationAttachm
   ) ?? null;
 }
 
+let highlightCleanup: number | undefined;
+
+function sameRange(a: Range, b: Range): boolean {
+  return a.startContainer === b.startContainer && a.startOffset === b.startOffset && a.endContainer === b.endContainer && a.endOffset === b.endOffset;
+}
+
 export async function highlightCitationSource(citation: CitationAttachment): Promise<boolean> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const source = findCitationSource(document, citation);
@@ -119,18 +125,35 @@ export async function highlightCitationSource(citation: CitationAttachment): Pro
       source.scrollIntoView({ block: "center", behavior: "smooth" });
       const highlights = (CSS as unknown as { highlights?: { set(name: string, value: unknown): void; delete(name: string): void } }).highlights;
       const HighlightConstructor = (globalThis as unknown as { Highlight?: new (range: Range) => unknown }).Highlight;
+      window.clearTimeout(highlightCleanup);
       if (highlights && HighlightConstructor) {
         highlights.set("omb-citation-source", new HighlightConstructor(range));
-        window.setTimeout(() => highlights.delete("omb-citation-source"), 2_500);
+        highlightCleanup = window.setTimeout(() => highlights.delete("omb-citation-source"), 2_500);
       } else {
         const selection = window.getSelection();
         selection?.removeAllRanges();
         selection?.addRange(range);
-        window.setTimeout(() => selection?.removeAllRanges(), 2_500);
+        highlightCleanup = window.setTimeout(() => {
+          if (selection?.rangeCount === 1 && sameRange(selection.getRangeAt(0), range)) selection.removeAllRanges();
+        }, 2_500);
       }
       return true;
     }
     await new Promise((resolve) => window.setTimeout(resolve, 100));
   }
   return false;
+}
+
+export function citationTabShortcut() {
+  let used = false;
+  return {
+    reset() { used = false; },
+    handle(event: Pick<KeyboardEvent, "key" | "shiftKey" | "preventDefault">, action: HTMLButtonElement | null): boolean {
+      if (used || event.key !== "Tab" || event.shiftKey || !action || action.disabled) return false;
+      event.preventDefault();
+      action.focus({ preventScroll: true });
+      used = true;
+      return true;
+    },
+  };
 }

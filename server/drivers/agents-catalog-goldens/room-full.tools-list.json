@@ -111,14 +111,14 @@
     },
     {
       "name": "coordinate_bots",
-      "description": "Ask existing OpenMausBot teammates for advice or assign concrete work. From normal chat every assignment you send a teammate continues your one standing conversation with that teammate, so they keep the context of what you asked before; from a room it defaults to this room. Use group_id from list_room_targets for a specific room. Give 1-4 bot_ids — teammate ids as list_bots or your roster prints them; a unique teammate name also resolves: they receive only your brief and use their own model, tools and permissions. Busy bots queue. They can consult their specialists; all results return here and resume you automatically. Include exact file paths, constraints and what must be verified. After sending all assignments, END your turn; do not poll or wait. On return, resolve tradeoffs, verify the requested outcome and request concrete corrections if necessary before giving one final answer. Do not send acknowledgements as new work.",
+      "description": "Ask existing OpenMausBot teammates for advice or assign concrete work. From normal chat each distinct assignment starts a fresh thread for that teammate; from a room it defaults to this room. Give a self-contained brief. Use group_id from list_room_targets for a specific room. Give 1-4 bot_ids — teammate ids as list_bots or your roster prints them; a unique teammate name also resolves: they receive only your brief and use their own model, tools and permissions. Busy bots queue. They can consult their specialists; all results return here and resume you automatically. Include exact file paths, constraints and what must be verified. After sending all assignments, END your turn; do not poll or wait. On return, resolve tradeoffs, verify the requested outcome and request concrete corrections if necessary before giving one final answer. Do not send acknowledgements as new work.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
           "group_id": {
             "type": "string",
-            "description": "Optional destination room. Omit for this room, or your standing conversation with each teammate when chatting directly."
+            "description": "Optional destination room. Omit for this room, or a fresh thread for each teammate when chatting directly."
           },
           "bot_ids": {
             "type": "array",
@@ -146,7 +146,7 @@
           },
           "label": {
             "type": "string",
-            "description": "Optional short name (one line, at most 60 characters) for this job. Used only when the teammate is still working on your previous assignment and this one therefore runs in its own thread beside your standing conversation."
+            "description": "Optional short name (one line, at most 60 characters) for this job. Names the new direct assignment thread."
           }
         },
         "required": [
@@ -158,33 +158,32 @@
     },
     {
       "name": "send_to_bot",
-      "description": "Send one self-contained job to one reachable teammate in a fresh thread. The recipient gets only your brief plus a link to this source conversation; the link grants no access. You receive a durable receipt linking their thread, then stop: their results, failures and questions stay there and never resume you. Use the same request_key for an identical retry; it returns the original thread without running twice. Use coordinate_bots instead when you need results returned here. Do not send without a complete, task-agnostic brief.",
+      "description": "Send work one way to another bot in a fresh thread. This is cross-bot only: use start_thread to send independent work to yourself. The recipient owns the new thread; its results, failures and questions stay there and never resume you. Use coordinate_bots when you need the result returned here.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
           "bot_id": {
             "type": "string",
-            "description": "Exactly one reachable teammate id from list_bots or list_room_targets; a unique teammate name also resolves."
-          },
-          "brief": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 20000,
-            "description": "Complete freeform instructions and context needed to continue without this transcript."
-          },
-          "request_key": {
-            "type": "string",
-            "description": "A short unique send key. Reuse it only for an identical retry."
+            "description": "One reachable teammate id from list_bots or list_room_targets."
           },
           "title": {
             "type": "string",
-            "description": "Optional one-line recipient thread title, at most 80 characters. Defaults to the brief's first line."
+            "description": "A short one-line title, at most 80 characters."
+          },
+          "message": {
+            "type": "string",
+            "description": "Complete instructions; the recipient does not inherit this conversation."
+          },
+          "request_key": {
+            "type": "string",
+            "description": "A short unique key for this assignment. Reuse it for an identical retry."
           }
         },
         "required": [
           "bot_id",
-          "brief",
+          "title",
+          "message",
           "request_key"
         ]
       }
@@ -234,7 +233,7 @@
               "local",
               "browser"
             ],
-            "description": "auto = suitable configured computer, cloud = remote Box/VPS, vm = isolated Local VM, local = user's own desktop, browser = built-in browser. Omit to list."
+            "description": "auto = suitable configured computer, cloud = remote Boat/VPS, vm = isolated Local VM, local = user's own desktop, browser = built-in browser. Omit to list."
           }
         }
       }
@@ -734,6 +733,11 @@
             "type": "string",
             "minLength": 1,
             "description": "Exact unique existing passage for replace, supersede, or remove. Omit for append."
+          },
+          "until": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Optional, for append or supersede: YYYY-MM-DD, the last day a temporary fact holds (an exam this weekend, a trip next week). After that day the entry is hidden from your memory."
           }
         },
         "required": [
@@ -985,7 +989,7 @@
               "maus",
               "box"
             ],
-            "description": "Default maus keeps the bot's selected model and configured computer, INCLUDING a self-hosted VPS. Omit this field for normal schedules. box explicitly switches the agent to the Box-hosted runner; it requires Box setup and is not the generic cloud/VPS option. Legacy cloud values from list_routines mean box, not VPS."
+            "description": "Default maus keeps the bot's selected model and configured computer, INCLUDING a self-hosted VPS. Omit this field for normal schedules. box explicitly switches the agent to the Boat-hosted runner; it requires Boat setup and is not the generic cloud/VPS option. Legacy cloud values from list_routines mean box, not VPS."
           },
           "timeout_minutes": {
             "type": "integer",
@@ -1023,7 +1027,7 @@
     },
     {
       "name": "propose_routine_action",
-      "description": "Prepare a user-requested change to one of this bot's existing routines. Use list_routines first to get the routine id. Read the result: granted Full Access may apply the change immediately. If applied, continue the requested work without another confirmation. Only a pending result requires ending the turn and waiting for the in-app decision. Never claim success from the permission mode alone; report failed or cancelled results honestly. This does not elevate another bot's execution permissions.",
+      "description": "Prepare a user-requested change to one of this bot's existing routines. Use list_routines first to get the routine id. If the user asks to change ANOTHER bot's routine and that bot is in your section, call list_bots and pass that bot's id as for_bot_id; the routine keeps its owner and every run keeps that bot's engine and permissions. Read the result: granted Full Access may apply the change immediately. If applied, continue the requested work without another confirmation. Only a pending result requires ending the turn and waiting for the in-app decision. Never claim success from the permission mode alone; report failed or cancelled results honestly. This does not elevate another bot's execution permissions.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -1032,6 +1036,10 @@
             "type": "string",
             "minLength": 1,
             "description": "Routine id from list_routines."
+          },
+          "for_bot_id": {
+            "type": "string",
+            "description": "Only when the requested change targets ANOTHER bot's routine and that bot is in your section: that bot's id from list_bots. Learn the routine id from that bot's own routines (it can run list_routines). Omit to change one of your own routines."
           },
           "action": {
             "type": "string",
@@ -1155,7 +1163,7 @@
                   "maus",
                   "box"
                 ],
-                "description": "Default maus keeps the bot's selected model and configured computer, INCLUDING a self-hosted VPS. Omit this field for normal schedules. box explicitly switches the agent to the Box-hosted runner; it requires Box setup and is not the generic cloud/VPS option. Legacy cloud values from list_routines mean box, not VPS."
+                "description": "Default maus keeps the bot's selected model and configured computer, INCLUDING a self-hosted VPS. Omit this field for normal schedules. box explicitly switches the agent to the Boat-hosted runner; it requires Boat setup and is not the generic cloud/VPS option. Legacy cloud values from list_routines mean box, not VPS."
               },
               "timeout_minutes": {
                 "type": "integer",

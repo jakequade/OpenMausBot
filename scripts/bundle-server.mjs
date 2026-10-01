@@ -47,6 +47,9 @@ const ENTRY_POINTS = [
   "openmausbot.ts",
   "pair-cli.ts",
   "workspace-backup.worker.ts",
+  // the OMB Cloud Pro home image's entry point (deploy/fly/Dockerfile): it
+  // spawns index.js beside it and the Caddy edge
+  "cloud-home-start.ts",
   // The packaged smoke probe imports this manifest directly. Importing the
   // shared avatar contract widens TypeScript's inferred emit root to the repo,
   // so tsc may place its copy under dist-server/server/. Bundle an explicit
@@ -148,6 +151,13 @@ if (existsSync(join(root, "enterprise", "server", "index.ts"))) {
   });
   copyFileSync(join(root, "enterprise", "LICENSE"), join(root, "dist-server", "enterprise", "LICENSE"));
 }
+
+// The model catalog snapshot (server/model-catalog/catalog.ts) is read from
+// disk, not inlined: 1.5 MB of JSON has no place in index.js. The bundle looks
+// for it under model-catalog/ beside itself. Its MIT notice is inside the file.
+const catalogSnapshot = join(root, "dist-server", "model-catalog", "models-dev.snapshot.json");
+mkdirSync(dirname(catalogSnapshot), { recursive: true });
+copyFileSync(join(server, "model-catalog", "models-dev.snapshot.json"), catalogSnapshot);
 
 // pi-mcp-extension.ts is NOT an OpenMausBot entry point: it is loaded by the
 // external `pi` process (pi's own jiti), which resolves its

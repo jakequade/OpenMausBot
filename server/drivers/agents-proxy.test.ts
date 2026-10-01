@@ -27,8 +27,6 @@ let savedResultWrites = 0;
 let lastAskBody: any = null;
 let lastCoordinateBody: any = null;
 let coordinateResponse: unknown = { ok: true };
-let lastHandoffBody: any = null;
-let handoffResponse: unknown = { accepted: true, duplicate: false, thread: { botId: "bot-helper", threadId: "thread-handoff", title: "Ship it", url: "/b/bot-helper/t/thread-handoff" } };
 let lastRoomsQuery = "";
 let lastPostBody: any = null;
 let lastExecBody: any = null;
@@ -259,16 +257,6 @@ beforeAll(async () => {
         lastCoordinateBody = JSON.parse(data);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify(coordinateResponse));
-      });
-      return;
-    }
-    if (req.method === "POST" && req.url === "/api/internal/send-to-bot") {
-      let data = "";
-      req.on("data", (c) => (data += c));
-      req.on("end", () => {
-        lastHandoffBody = JSON.parse(data);
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify(handoffResponse));
       });
       return;
     }
@@ -1622,9 +1610,21 @@ describe("agents-proxy MCP surface", () => {
     expect(res.result.isError).toBeFalsy();
   });
 
-  it.each(["box", "cloud"])("maps %s execution to the explicit Box runner without changing stored wire values", async (run_on) => {
+  it("forwards for_bot_id when the action targets another bot's routine", async () => {
+    lastRoutineRequestBody = null;
+    const res = await callTool("propose_routine_action", {
+      action: "pause",
+      routine_id: "routine-morning",
+      for_bot_id: "bot-helper",
+    });
+    expect(lastRoutineRequestBody.forBotId).toBe("bot-helper");
+    expect(lastRoutineRequestBody.routineId).toBe("routine-morning");
+    expect(res.result.isError).toBeFalsy();
+  });
+
+  it.each(["box", "cloud"])("maps %s execution to the explicit Boat runner without changing stored wire values", async (run_on) => {
     const res = await callTool("propose_routine", {
-      name: "Box check", instructions: "Check explicitly on Box.",
+      name: "Boat check", instructions: "Check explicitly on Boat.",
       schedule: { type: "daily", time: "09:00" }, run_on,
     });
     expect(res.result.isError).toBeFalsy();
@@ -1636,7 +1636,7 @@ describe("agents-proxy MCP surface", () => {
     expect(lastRoutineRequestBody.changes.runOn).toBe("cloud");
   });
 
-  it("advertises VPS-compatible default execution separately from the Box runner", async () => {
+  it("advertises VPS-compatible default execution separately from the Boat runner", async () => {
     const list = await rpc("tools/list");
     const routine = list.result.tools.find((entry: { name: string }) => entry.name === "propose_routine");
     expect(routine.inputSchema.properties.run_on.enum).toEqual(["maus", "box"]);
@@ -2280,27 +2280,52 @@ describe("coordinate_bots arguments (room turn)", () => {
     });
   });
 
-  it("hands one complete brief to one fresh recipient thread", async () => {
+  it("sends cross-bot work one way through the existing thread route", async () => {
     const listed = await roomRpc("tools/list");
-    expect(listed.result.tools.map((tool: { name: string }) => tool.name)).toContain("send_to_bot");
-    const res = await roomRpc("tools/call", { name: "send_to_bot", arguments: {
-      bot_id: "bot-helper", brief: "Ship the reviewed patch.", request_key: "ship-1", title: "Ship it",
-    } });
-    expect(res.result.isError).toBeFalsy();
-    expect(lastHandoffBody).toEqual({
-      toBotId: "bot-helper", brief: "Ship the reviewed patch.", requestKey: "ship-1", title: "Ship it",
-    });
-    expect(JSON.parse(res.result.content[0].text)).toMatchObject({ accepted: true, duplicate: false });
+    const send = listed.result.tools.find((tool: { name: string }) => tool.name === "send_to_bot");
+    expect(send.description).toContain("cross-bot only");
+    const previous = threadResponse;
+    threadResponse = { threadId: "thread-sent", title: "Ship it", botId: "bot-helper", botName: "Helper", self: false };
+    try {
+      const result = await roomRpc("tools/call", { name: "send_to_bot", arguments: {
+        bot_id: "bot-helper", title: "Ship it", message: "Ship the reviewed patch.", request_key: "ship-it",
+      } });
+      expect(result.result.isError).toBeFalsy();
+      expect(lastThreadBody).toMatchObject({
+        toBotId: "bot-helper", title: "Ship it", message: "Ship the reviewed patch.", requestKey: "ship-it", oneWay: true,
+      });
+      expect(result.result.content[0].text).toContain("nothing there will resume you");
+    } finally {
+      threadResponse = previous;
+    }
   });
 
-  it("refuses an incomplete handoff before contacting the server", async () => {
-    lastHandoffBody = null;
-    const res = await roomRpc("tools/call", { name: "send_to_bot", arguments: {
-      bot_id: "bot-helper", brief: "", request_key: "ship-2",
+  it("reports a cross-bot send that is waiting for approval", async () => {
+    const previous = threadResponse;
+    threadResponse = {
+      threadId: "thread-sent", title: "Ship it", botId: "bot-helper", botName: "Helper",
+      self: false, state: "pending", approvalRequired: true,
+    };
+    try {
+      const result = await roomRpc("tools/call", { name: "send_to_bot", arguments: {
+        bot_id: "bot-helper", title: "Ship it", message: "Ship the reviewed patch.", request_key: "ship-approval",
+      } });
+      expect(result.result.isError).toBeFalsy();
+      expect(result.result.content[0].text).toContain("pending approval");
+      expect(result.result.content[0].text).not.toContain("Ownership moved");
+    } finally {
+      threadResponse = previous;
+    }
+  });
+
+  it("refuses send_to_bot to self without contacting the server", async () => {
+    lastThreadBody = null;
+    const result = await roomRpc("tools/call", { name: "send_to_bot", arguments: {
+      bot_id: "bot-asker", title: "Separate work", message: "Do it.", request_key: "separate-work",
     } });
-    expect(res.result.isError).toBe(true);
-    expect(res.result.content[0].text).toContain("bot_id, a complete brief and request_key");
-    expect(lastHandoffBody).toBeNull();
+    expect(result.result.isError).toBe(true);
+    expect(result.result.content[0].text).toContain("cross-bot only");
+    expect(lastThreadBody).toBeNull();
   });
 
   it("keeps the documented snake_case key when both spellings arrive", async () => {

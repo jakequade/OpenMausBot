@@ -321,7 +321,7 @@ function routineFields(args: Json): { fields: Json; error?: string } {
   const runOn = destination(args.run_on ?? args.runOn);
   const timeoutMinutes = args.timeout_minutes ?? args.timeoutMinutes;
   if (runOn != null && runOn !== "maus" && runOn !== "cloud") {
-    return { fields, error: 'Use run_on="maus" for the bot’s current model and configured computer (including VPS), or run_on="box" only for the Box-hosted agent. Legacy "cloud" also means Box.' };
+    return { fields, error: 'Use run_on="maus" for the bot’s current model and configured computer (including VPS), or run_on="box" only for the Boat-hosted agent. Legacy "cloud" also means Boat.' };
   }
   if (timeoutMinutes != null && (
     typeof timeoutMinutes !== "number" || !Number.isInteger(timeoutMinutes) || timeoutMinutes < 5 || timeoutMinutes > 240
@@ -535,19 +535,29 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
   }
   if (name === "send_to_bot") {
     const botId = String(args.bot_id ?? "").trim();
-    const brief = String(args.brief ?? "").trim();
+    const title = String(args.title ?? "").trim();
+    const message = String(args.message ?? "").trim();
     const requestKey = String(args.request_key ?? "").trim();
-    const title = typeof args.title === "string" ? args.title.trim() : "";
-    if (!botId || !brief || !requestKey) {
-      return { text: "send_to_bot needs bot_id, a complete brief and request_key; title is optional.", isError: true };
+    if (!botId || !title || !message || !/^[\w-]{1,100}$/.test(requestKey)) {
+      return { text: "send_to_bot needs bot_id, title, message and a short request_key (letters, digits, underscores or hyphens).", isError: true };
     }
-    if (turn.threadsOpenedThisTurn >= MAX_THREADS_PER_TURN) {
-      return { text: `You have already opened ${MAX_THREADS_PER_TURN} threads this turn, which is the limit.`, isError: true };
+    if (botId === context.botId) {
+      return { text: "send_to_bot is cross-bot only. Use start_thread to send independent work to yourself.", isError: true };
     }
-    const r = await api("/api/internal/send-to-bot", { method: "POST", body: JSON.stringify({ toBotId: botId, brief, requestKey, ...(title ? { title } : {}) }) });
-    if (r.error) return { text: String(r.error), isError: true };
-    if (r.duplicate !== true) turn.threadsOpenedThisTurn += 1;
-    return { text: JSON.stringify(r) };
+    const r = await api("/api/internal/threads", { method: "POST", body: JSON.stringify({
+      fromBotId: context.botId, fromThreadId: context.threadId, toBotId: botId,
+      title, message, requestKey, depth: context.depth, oneWay: true,
+    }) });
+    if (r.error) return { text: `Couldn't send to that bot: ${String(r.error)}`, isError: true };
+    if (r.replayed !== true) turn.threadsOpenedThisTurn += 1;
+    const destination = `@${String(r.botName ?? "that bot")} in #${String(r.title ?? title)} [thread id: ${String(r.threadId ?? "")}]`;
+    if (r.replayed === true) return { text: `Already sent to ${destination}. Its result stays in that thread; nothing there will resume you.` };
+    const state = r.approvalRequired === true
+      ? `Send to ${destination} is pending approval. The person's approval card appears after this turn ends; dispatch starts once approved.`
+      : r.state === "queued"
+        ? `Send to ${destination} is queued ${ordinal(Number(r.position) || 1)} for a free slot and can dispatch after this turn ends.`
+        : `Send to ${destination} is pending until this turn ends, then dispatch starts.`;
+    return { text: `${state} Its result stays in that thread; nothing there will resume you.` };
   }
   if (name === "list_bots") {
     const r = await api(`/api/internal/agents?self=${encodeURIComponent(BOT_ID)}`);
@@ -999,11 +1009,14 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     if (!routineId || !action) {
       return { text: "propose_routine_action needs a routine_id and supported action.", isError: true };
     }
+    const forBotId = String(args.for_bot_id ?? "").trim();
     const body: Json = {
       fromBotId: BOT_ID,
       fromThreadId: THREAD_ID,
       action,
       routineId,
+      // JSON.stringify drops the key entirely when no target was named
+      ...(forBotId ? { forBotId } : {}),
     };
     if (action === "update") {
       if (!jsonRecord(args.changes)) {
@@ -1104,6 +1117,7 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
         action: args.action,
         text: args.text,
         oldText: args.old_text,
+        ...(typeof args.until === "string" && args.until.trim() ? { until: args.until.trim() } : {}),
       }),
     });
     if (r.error || r.ok !== true) {

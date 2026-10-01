@@ -44,74 +44,6 @@ async function addSupervisingChief(f: any, section = "") {
   return chief;
 }
 
-it("sends a room request to a fresh recipient thread without a callback to the room", () => withRooms(async f => {
-  const brief = "Take ownership of the deployment checklist.";
-  const sourceUrl = `openmausbot://thread/${f.source.activeTaskId}?bot=${f.source.id}`;
-  f.plan[f.sender.id] = { steps: [{ tool: "send_to_bot", arguments: {
-    bot_id: f.target.id, request_key: "deploy-checklist", title: "Deployment checklist", brief,
-  } }], reply: "Ownership transferred" };
-  f.plan[f.target.id] = { reply: "Deployment checklist is ready.", expectContextIncludes: [brief, sourceUrl] };
-  await f.start();
-  expect((await f.wait()).status).toBe("settled");
-  await expect.poll(() => f.provider().filter((turn: any) => turn.botId === f.target.id).length, { timeout: 15_000 }).toBe(1);
-  const target = (await f.api("/api/bots")).bots.find((bot: any) => bot.id === f.target.id);
-  const handed = target.tasks.find((task: any) => task.title === "Deployment checklist");
-  expect(handed.threadId).not.toBe(f.target.activeTaskId);
-  expect((await f.messages(handed.threadId)).some((message: any) => message.text === "Deployment checklist is ready.")).toBe(true);
-  const sourceMessages = await f.messages(f.source.activeTaskId);
-  expect(sourceMessages.some((message: any) => message.text?.includes("Deployment checklist is ready"))).toBe(false);
-  expect(sourceMessages.filter((message: any) => message.threadRef?.threadId === handed.threadId)).toHaveLength(1);
-  expect(f.nodes()).toEqual([]);
-}), 45_000);
-
-it("does not report or create a send when peer approval is denied", () => withRooms(async f => {
-  await f.api(`/api/bots/${f.sender.id}`, { approvePeerComms: true }, "PATCH");
-  f.plan[f.sender.id] = { steps: [{ tool: "send_to_bot", expectError: true, arguments: {
-    bot_id: f.target.id, request_key: "denied-handoff", title: "Must not exist", brief: "Take ownership.",
-  } }], reply: "The handoff was denied" };
-  await f.start();
-  let card: any;
-  await expect.poll(async () => {
-    card = (await f.messages(f.source.activeTaskId)).find((message: any) => message.card?.tool === "delegate_bot");
-    return Boolean(card);
-  }, { timeout: 10_000 }).toBe(true);
-  expect((await f.cli("wait", "--channel", f.source.id, "--timeout", "3")).status).toBe("needs-user");
-  await f.api(`/api/threads/${f.source.activeTaskId}/respond`, { requestId: card.card.requestId, behavior: "deny" });
-  expect((await f.wait()).status).toBe("settled");
-  const target = (await f.api("/api/bots")).bots.find((bot: any) => bot.id === f.target.id);
-  expect(target.tasks.some((task: any) => task.title === "Must not exist")).toBe(false);
-  expect(f.provider().filter((turn: any) => turn.botId === f.target.id)).toHaveLength(0);
-}), 45_000);
-
-it("coalesces concurrent identical send retries behind one approval and one execution", () => withRooms(async f => {
-  await f.api(`/api/bots/${f.sender.id}`, { approvePeerComms: true }, "PATCH");
-  const step = { tool: "send_to_bot", arguments: {
-    bot_id: f.target.id, request_key: "concurrent-handoff", title: "Concurrent handoff", brief: "Own this once.",
-  } };
-  f.plan[f.sender.id] = { steps: [step, step], parallelSteps: true, reply: "Ownership transferred once" };
-  f.plan[f.target.id] = { reply: "Executed once." };
-  await f.start();
-  let card: any;
-  await expect.poll(async () => {
-    const cards = (await f.messages(f.source.activeTaskId)).filter((message: any) => message.card?.tool === "delegate_bot");
-    card = cards[0];
-    return cards.length;
-  }, { timeout: 10_000 }).toBe(1);
-  await f.api(`/api/threads/${f.source.activeTaskId}/respond`, { requestId: card.card.requestId, behavior: "allow" });
-  expect((await f.wait()).status).toBe("settled");
-  await expect.poll(() => f.provider().filter((turn: any) => turn.botId === f.target.id).length, { timeout: 15_000 }).toBe(1);
-  const state = await f.api("/api/bots");
-  const tasks = state.bots.find((bot: any) => bot.id === f.target.id).tasks.filter((task: any) => task.title === "Concurrent handoff");
-  expect(tasks).toHaveLength(1);
-  const calls = f.provider().find((turn: any) => turn.botId === f.sender.id).evidence
-    .filter((entry: any) => entry.step?.tool === "send_to_bot")
-    .map((entry: any) => JSON.parse(entry.response.result.content[0].text));
-  expect(calls).toHaveLength(2);
-  expect(calls.map((call: any) => call.duplicate).sort()).toEqual([false, true]);
-  expect(calls[0].thread).toEqual(calls[1].thread);
-  expect((await f.messages(f.source.activeTaskId)).filter((message: any) => message.threadRef?.threadId === tasks[0].threadId)).toHaveLength(1);
-}), 60_000);
-
 it.each(["", "Leadership"])("lists and coordinates with a supervising Chief and same-section peer in the same room (Chief section %j)", section => withRooms(async f => {
   const chief = await addSupervisingChief(f, section);
   f.plan[f.sender.id].steps = [{ arguments: { bot_ids: [chief.id, f.target.id], request_key: "same-room", message: "Review the work here" } }];
@@ -184,8 +116,7 @@ it("runs room-destined work in the room's own conversation, opening no thread on
   const tasksOf = async (botId: string) => (await f.api("/api/bots")).bots.find((bot: any) => bot.id === botId).tasks ?? [];
   const before = await tasksOf(f.target.id);
   await f.start(); expect((await f.wait()).status).toBe("settled");
-  // a room is already a destination: pair conversations are for the
-  // direct case only and must not appear beside one
+  // A room is already a destination; direct work threads must not appear beside it.
   const node = f.nodes().find((n: any) => n.botId === f.target.id);
   expect(node.groupId).toBe(f.destination.id);
   expect(node.threadId).toBe(f.destination.activeTaskId);

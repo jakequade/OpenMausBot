@@ -7,13 +7,14 @@
 // cannot exec, and the broker is a unix socket. Both now go through
 // resolveCliSpawn / permissionSocketPath, so they run everywhere.
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { connect, createServer as createNetServer, type Socket } from "node:net";
+import { createServer as createHttpServer, type IncomingHttpHeaders } from "node:http";
+import { connect, createServer as createNetServer, type AddressInfo, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { DATA_DIR, ensureDirs, NATIVE_DIR } from "../config.ts";
+import { DATA_DIR, ensureDirs, instanceConfigs, NATIVE_DIR } from "../config.ts";
 import type { ProviderInstance } from "../contracts.ts";
 import { recordEvents, type EventRecorder } from "../testing/events.ts";
 import {
@@ -28,6 +29,11 @@ import {
   parseClaudeCliVersion,
   permissionSocketPath,
   readClaudeAuthSettings,
+  claudeCostSnapshot,
+  restoredCostBase,
+  STEERED_CONTINUATION_GRACE_MS,
+  sumNativeTurnResults,
+  turnCostFromRunningTotal,
   type ClaudeConfig,
 } from "./claude.ts";
 import { removeTempDir } from "../testing/cleanup.ts";
@@ -113,10 +119,91 @@ describe("ClaudeDriver.decodeConfig", () => {
     expect(ClaudeDriver.decodeConfig(undefined)).toEqual({ cli: "claude", permissionMode: "acceptEdits" });
   });
 
+  it("bills a steered continuation's native results as one turn", () => {
+    // usage is per native turn and adds up; total_cost_usd is the CLI's
+    // running total for the process, so the latest figure stands
+    const first = { ok: true, stopReason: "end_turn", cost: 0.01, usage: { input: 12, output: 5, cachedInput: 2 } };
+    expect(sumNativeTurnResults(null, first)).toEqual(first);
+    expect(sumNativeTurnResults(first, { ok: true, stopReason: "end_turn", cost: 0.03, usage: { input: 3, output: 4 } }))
+      .toEqual({ ok: true, stopReason: "end_turn", cost: 0.03, usage: { input: 15, output: 9, cachedInput: 2 } });
+    // a failed half fails the turn; a figure missing on one side leaves the other's alone
+    expect(sumNativeTurnResults(first, { ok: false, stopReason: null, cost: null }))
+      .toEqual({ ok: false, stopReason: "end_turn", cost: 0.01, usage: first.usage });
+    expect(sumNativeTurnResults({ ok: true, stopReason: null, cost: null }, { ok: true, stopReason: null, cost: null }))
+      .toEqual({ ok: true, stopReason: null, cost: null });
+  });
+
   it("accepts the three known permission modes", () => {
     for (const permissionMode of ["acceptEdits", "auto", "bypassPermissions"] as const) {
       expect(ClaudeDriver.decodeConfig({ permissionMode }).permissionMode).toBe(permissionMode);
     }
+  });
+
+  it("books a turn's share of the CLI's running cost total", () => {
+    // a process's first turn has no earlier total: its figure is its own
+    expect(turnCostFromRunningTotal(1.5822674, null)).toBe(1.5822674);
+    // later turns book the growth — the incident's two consecutive totals
+    expect(turnCostFromRunningTotal(1.7255570000000002, 1.5822674)).toBe(0.1432896);
+    // without the float noise of subtracting two totals
+    expect(turnCostFromRunningTotal(0.03, 0.02)).toBe(0.01);
+    expect(turnCostFromRunningTotal(0.02, 0.02)).toBe(0);
+    expect(turnCostFromRunningTotal(null, 0.02)).toBeNull();
+    // a total below the earlier one cannot be the same count: never negative
+    expect(turnCostFromRunningTotal(0.004, 0.02)).toBe(0.004);
+  });
+
+  it("finds the running cost the CLI restored for a resumed session", () => {
+    // Real frames (2.1.282). modelUsage counts [input, cache read, cache
+    // write, output] per model for the whole session; usage is the turn's own.
+    const opus = (total: number, tokens: [number, number, number, number]) => claudeCostSnapshot(total, {
+      "claude-opus-5-5": { inputTokens: tokens[0], cacheReadInputTokens: tokens[1], cacheCreationInputTokens: tokens[2], outputTokens: tokens[3], costUSD: total },
+    })!;
+    const earlier = [
+      opus(1.5822674, [18, 776097, 103347, 30010]),
+      opus(1.7255570000000002, [24, 1167845, 107739, 31499]),
+      opus(3.2557024000000006, [34, 1682172, 227804, 54835]),
+      opus(4.3538464, [36, 1682172, 353781, 59351]),
+    ];
+    // This resumed launch restored the 3.2557 state, not the later 4.3538 one.
+    const resumed = opus(4.212299000000001, [60, 3542515, 254587, 73343]);
+    expect(restoredCostBase(earlier, resumed, { input: 26, cacheRead: 1860343, cacheWrite: 26783, output: 18508 })).toBe(3.2557024000000006);
+    // A fresh session restored nothing; a side call on another model (a
+    // title from Haiku) is in modelUsage but not in the turn's usage.
+    const fresh = claudeCostSnapshot(0.20990999999999999, {
+      "claude-haiku-4-5-20251001": { inputTokens: 978, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, outputTokens: 10, costUSD: 0.001028 },
+      "claude-sonnet-5": { inputTokens: 2, cacheReadInputTokens: 0, cacheCreationInputTokens: 52057, outputTokens: 65, costUSD: 0.208882 },
+    })!;
+    expect(restoredCostBase([], fresh, { input: 2, cacheRead: 0, cacheWrite: 52057, output: 65 })).toBe(0);
+    // An interrupted turn's work was restored but never reported: measure
+    // from the latest known state inside the new counts, so that work is
+    // booked once, with this turn.
+    const beforeInterrupt = opus(0.8265352, [20, 559016, 79339, 3997]);
+    const afterInterrupt = opus(3.0735268, [86, 4211334, 254837, 9611]);
+    expect(restoredCostBase([beforeInterrupt], afterInterrupt, { input: 48, cacheRead: 2873716, cacheWrite: 142479, output: 3805 })).toBe(0.8265352);
+    // No known state at all: the whole figure.
+    expect(restoredCostBase([], resumed, { input: 26, cacheRead: 1860343, cacheWrite: 26783, output: 18508 })).toBe(0);
+    expect(claudeCostSnapshot(null, {})).toBeNull();
+  });
+
+  it("matches a resumed turn split over two models by the sum of its growth", () => {
+    // States A=2 ($0.01) and A=3 ($0.02); the resume restored the first, and
+    // the turn used one input token on each of A and B. Its usage counts both.
+    const state = (total: number, models: Record<string, number>) => claudeCostSnapshot(total, Object.fromEntries(
+      Object.entries(models).map(([model, input]) => [model, { inputTokens: input, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, outputTokens: 0, costUSD: 0 }]),
+    ))!;
+    const earlier = [state(0.01, { A: 2 }), state(0.02, { A: 3 })];
+    expect(restoredCostBase(earlier, state(0.03, { A: 3, B: 1 }), { input: 2, cacheRead: 0, cacheWrite: 0, output: 0 })).toBe(0.01);
+  });
+
+  it("measures from the latest known state, not the highest total", () => {
+    // A resume that went back to an older state leaves a later state with a
+    // lower total (4.3538 then 4.2123 in a real session). With no exact fit,
+    // the latest state inside the new counts is the start.
+    const state = (total: number, input: number) => claudeCostSnapshot(total, {
+      A: { inputTokens: input, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, outputTokens: 0, costUSD: total },
+    })!;
+    const earlier = [state(0.05, 5), state(0.03, 4)];
+    expect(restoredCostBase(earlier, state(0.06, 8), { input: 1, cacheRead: 0, cacheWrite: 0, output: 0 })).toBe(0.03);
   });
 
   it("throws on an invalid permissionMode (registry downgrades this to a shadow)", () => {
@@ -363,6 +450,9 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     delete process.env.FAKE_CLAUDE_PARTIAL_FAILS;
     delete process.env.FAKE_CLAUDE_STATE;
     delete process.env.FAKE_CLAUDE_RETRY_SCALE;
+    delete process.env.FAKE_CLAUDE_TEXT_HANG;
+    delete process.env.FAKE_CLAUDE_STEER_GRACE_SCALE;
+    delete process.env.FAKE_CLAUDE_STEER_SILENCE_SCALE;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.XAI_API_KEY;
     delete process.env.COMPOSIO_API_KEY;
@@ -375,6 +465,46 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     recorder?.stop();
     await instance?.dispose();
     await removeTempDir(scratch);
+  });
+
+  // Security: a saved workspace Anthropic key was written over every Claude
+  // instance's environment, so a router instance's host received it as
+  // x-api-key beside the router's own Bearer token, or the turn went to the
+  // workspace URL instead of the router.
+  it.each([
+    ["without a workspace URL", { key: "sk-ant-workspace-secret" }],
+    ["with a workspace URL", { key: "sk-ant-workspace-secret", url: "http://127.0.0.1:9" }],
+  ])("sends a router instance's turn to its own host with only its own token (%s)", async (_label, anthropic) => {
+    const seen: IncomingHttpHeaders[] = [];
+    const router = createHttpServer((request, response) => {
+      seen.push(request.headers);
+      request.resume();
+      response.end("{}");
+    });
+    await new Promise<void>((resolve) => router.listen(0, "127.0.0.1", resolve));
+    try {
+      const base = `http://127.0.0.1:${(router.address() as AddressInfo).port}`;
+      const map = instanceConfigs({
+        anthropic,
+        instances: {
+          claude: { driver: "claudeAgent" },
+          router: { driver: "claudeAgent", environment: { ANTHROPIC_BASE_URL: base, ANTHROPIC_AUTH_TOKEN: "router-token" } },
+        },
+      });
+      // the workspace key still reaches the ordinary Claude instance
+      expect(map.claude!.environment).toMatchObject({ ANTHROPIC_API_KEY: "sk-ant-workspace-secret" });
+      process.env.FAKE_CLAUDE_ROUTER_PING = "1";
+      await create(undefined, map.router!.environment as Record<string, string>);
+      await instance.adapter.sendTurn({ threadId: "t-router", text: "hi", model: "claude-sonnet-5" });
+      await recorder.until((e) => e.type === "turn.completed");
+      expect(seen).toHaveLength(1);
+      expect(seen[0]!.authorization).toBe("Bearer router-token");
+      expect(seen[0]!["x-api-key"]).toBeUndefined();
+      expect(JSON.stringify(seen)).not.toContain("sk-ant-workspace-secret");
+    } finally {
+      delete process.env.FAKE_CLAUDE_ROUTER_PING;
+      await new Promise((resolve) => router.close(resolve));
+    }
   });
 
   it("normalizes a full turn into the canonical event sequence", async () => {
@@ -497,6 +627,44 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(readFileSync(healthyDump, "utf8")).toBe(healthyBefore);
     expect(JSON.parse(readFileSync(retryDump, "utf8")).pid).toBe(replacement.pid);
     expect(recorder.events.some((event) => event.type === "turn.retrying")).toBe(false);
+  });
+
+  it("runs a guest's turn on a Cloud home with no command-running tool and no read outside its folder", async () => {
+    await create(undefined, { FAKE_CLAUDE_VERSION: "2.1.284" });
+    expect(instance.adapter.capabilities.guestTurns).toBe("confined");
+    // What a guest could have left in its own folder on an earlier turn.
+    // Inside the scratch folder: its removal waits for the CLI to let go of it (Windows).
+    const folder = mkdtempSync(join(scratch, "guest-folder-"));
+    writeFileSync(join(folder, ".mcp.json"), JSON.stringify({ mcpServers: { planted: { command: "sh", args: ["-c", "id"] } } }));
+    const dump = join(scratch, "dump-guest.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    await instance.adapter.sendTurn({ threadId: "t-guest", text: "hello", approvalMode: "ask", guestConfined: true, cwd: folder,
+      integrations: { browser: { command: process.execPath, args: ["fixture-browser"], env: {} } } });
+    await recorder.until((e) => e.type === "turn.completed");
+    const seen = JSON.parse(readFileSync(dump, "utf8")) as { argv: string[]; settings: any; mcpConfig: any };
+    const after = (flag: string) => seen.argv[seen.argv.indexOf(flag) + 1];
+    expect(seen.argv).toContain("--restricted");
+    expect(after("--tools")).toBe("Read,Grep,Glob,Edit,Write,WebSearch");
+    expect(after("--permission-mode")).toBe("default");
+    expect(seen.settings.permissions).toMatchObject({ blockReadsOutsideWorkingDirectories: true });
+    expect(seen.settings.permissions.deny).toEqual(expect.arrayContaining(["Bash", "PowerShell", "WebFetch"]));
+    // The folder's own servers never mount, and the browser (it can open a
+    // file: address) asks the owner before every call.
+    expect(Object.keys(seen.mcpConfig.mcpServers)).not.toContain("planted");
+    expect(after("--allowedTools").split(",")).not.toContain("mcp__browser");
+    expect(recorder.events.find((e) => e.type === "turn.completed")).toMatchObject({ ok: true });
+  });
+
+  it("stops a guest's turn when the CLI kept a shell, and refuses one too old to confine it", async () => {
+    await create(undefined, { FAKE_CLAUDE_VERSION: "2.1.284", FAKE_CLAUDE_KEEP_BASH: "1" });
+    await instance.adapter.sendTurn({ threadId: "t-kept", text: "hello", approvalMode: "ask", guestConfined: true, confinedWhy: "This routine was made before this update." });
+    await recorder.until((e) => e.type === "turn.completed");
+    expect(JSON.stringify(recorder.events)).toContain("kept its shell, so it can't run this turn. Update Claude Code. This routine was made before this update.");
+    expect(recorder.events.find((e) => e.type === "turn.completed")).toMatchObject({ ok: false });
+    await create(undefined, { FAKE_CLAUDE_VERSION: "2.1.250" });
+    const refused = await instance.adapter.sendTurn({ threadId: "t-old", text: "hello", approvalMode: "ask", guestConfined: true })
+      .then(() => recorder.until((e) => e.type === "turn.completed").then((event) => JSON.stringify(event) + JSON.stringify(recorder.events)), (error: unknown) => String(error));
+    expect(refused).toContain("too old to run this turn without a shell");
   });
 
   it("keeps a workspace Anthropic key set on purpose while still dropping one from the parent env", async () => {
@@ -1853,6 +2021,383 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     await expect(instance.adapter.steer!("t-steer", "late")).resolves.toBe("refused");
   });
 
+  it("keeps the turn open while a steered message the CLI could not fold runs as its next native turn", async () => {
+    // The CLI folds a mid-turn message only before a model call that has not
+    // started yet. Words that land during the turn's LAST call are queued and
+    // run as the next turn on the same stdin — in this process, on this
+    // turn's tools and capability. The logical turn is over when THAT reply
+    // lands, not when the first `result` frame does. This fake's results
+    // carry no queued_turn_count (an older CLI): the driver's own count of
+    // steers since the last fold seam is what holds the turn.
+    const finishGate = join(scratch, "late-steer-first.gate");
+    const continuationGate = join(scratch, "late-steer-continuation.gate");
+    const received = join(scratch, "late-steer-received");
+    await create("slow", {
+      FAKE_CLAUDE_SLOW_FINISH_GATE: finishGate,
+      FAKE_CLAUDE_LATE_STEER_GATE: continuationGate,
+      FAKE_CLAUDE_STEER_RECEIVED: received,
+    });
+    const { turnId } = await instance.adapter.sendTurn({ threadId: "t-late-steer", text: "first" });
+    await recorder.until((e) => e.type === "item.completed" && e.itemType === "tool");
+    await expect(instance.adapter.steer!("t-late-steer", "and also this")).resolves.toBe("steered");
+    await expect.poll(() => existsSync(received)).toBe(true);
+    writeFileSync(continuationGate, "finish");
+    writeFileSync(finishGate, "finish");
+    const answered = await recorder.until(
+      (e) => e.type === "item.completed" && e.itemType === "assistant_text" && (e as { text: string }).text === "reply to: and also this",
+    );
+    const completed = await recorder.until((e) => e.type === "turn.completed");
+    // one logical turn, reported over only after the steered words were answered
+    expect(recorder.events.indexOf(completed)).toBeGreaterThan(recorder.events.indexOf(answered));
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+    // the CLI re-announced init for the continuation; both halves are this turn
+    expect(recorder.events.filter((e) => e.type === "session.started")).toHaveLength(2);
+    expect(recorder.events.every((e) => e.turnId === turnId)).toBe(true);
+    // both native results are this turn's bill: per-turn usage adds up, and
+    // the cost is the CLI's running total (0.01, then 0.02), not their sum
+    expect(completed).toMatchObject({ ok: true, cost: 0.02, usage: { input: 24, output: 10, cachedInput: 4 } });
+    await expect(instance.adapter.steer!("t-late-steer", "late")).resolves.toBe("refused");
+  });
+
+  it("books a steered continuation on a retained process's second turn at that turn's share", async () => {
+    // Process totals: turn one 0.01; turn two 0.02 (held for the steer),
+    // then its continuation 0.03. The logical second turn cost two native
+    // turns: 0.02 — not the running total 0.03, and not the last half 0.01.
+    const finishGate = join(scratch, "retained-steer-finish.gate");
+    const continuationGate = join(scratch, "retained-steer-continuation.gate");
+    const received = join(scratch, "retained-steer-received");
+    const dump = join(scratch, "retained-steer-dump.json");
+    await create("slow", {
+      FAKE_CLAUDE_SLOW_FINISH_GATE: finishGate,
+      FAKE_CLAUDE_LATE_STEER_GATE: continuationGate,
+      FAKE_CLAUDE_STEER_RECEIVED: received,
+      FAKE_CLAUDE_DUMP: dump,
+    });
+    const threadId = "t-retained-steer";
+    writeFileSync(finishGate, "finish");
+    const first = await instance.adapter.sendTurn({ threadId, text: "first" });
+    const firstDone = await recorder.until((e) => e.type === "turn.completed" && e.turnId === first.turnId);
+    expect(firstDone).toMatchObject({ ok: true, cost: 0.01 });
+    const launch = readFileSync(dump, "utf8");
+    rmSync(finishGate);
+
+    const second = await instance.adapter.sendTurn({ threadId, text: "second" });
+    await recorder.until((e) => e.type === "item.completed" && e.itemType === "tool" && e.turnId === second.turnId);
+    await expect(instance.adapter.steer!(threadId, "and also this")).resolves.toBe("steered");
+    await expect.poll(() => existsSync(received)).toBe(true);
+    writeFileSync(continuationGate, "finish");
+    writeFileSync(finishGate, "finish");
+    const done = await recorder.until((e) => e.type === "turn.completed" && e.turnId === second.turnId);
+    // the same process ran both logical turns and the continuation
+    expect(readFileSync(dump, "utf8")).toBe(launch);
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(2);
+    expect(done).toMatchObject({ ok: true, cost: 0.02, usage: { input: 24, output: 10, cachedInput: 4 } });
+  });
+
+  it("holds on queued_turn_count 0 too: 2.1.282 reports 0 for words waiting on stdin, then runs them next", async () => {
+    // The incident's own result frame said queued_turn_count: 0 and the CLI
+    // started the steered message 58 ms later anyway — the field counts its
+    // command queue, which a stdin message never sits in. So 0 is not
+    // "nothing follows"; only the driver's own count says a steer is out.
+    const finishGate = join(scratch, "zero-first.gate");
+    const continuationGate = join(scratch, "zero-continuation.gate");
+    const received = join(scratch, "zero-received");
+    await create("slow", {
+      FAKE_CLAUDE_SLOW_FINISH_GATE: finishGate,
+      FAKE_CLAUDE_LATE_STEER_GATE: continuationGate,
+      FAKE_CLAUDE_STEER_RECEIVED: received,
+      FAKE_CLAUDE_QUEUED_TURN_COUNT: "zero",
+    });
+    const threadId = "t-late-steer-zero";
+    const { turnId } = await instance.adapter.sendTurn({ threadId, text: "first" });
+    await recorder.until((e) => e.type === "item.completed" && e.itemType === "tool");
+    await expect(instance.adapter.steer!(threadId, "and also this")).resolves.toBe("steered");
+    await expect.poll(() => existsSync(received)).toBe(true);
+    writeFileSync(continuationGate, "finish");
+    writeFileSync(finishGate, "finish");
+    const answered = await recorder.until(
+      (e) => e.type === "item.completed" && e.itemType === "assistant_text" && (e as { text: string }).text === "reply to: and also this",
+    );
+    const completed = await recorder.until((e) => e.type === "turn.completed");
+    expect(recorder.events.indexOf(completed)).toBeGreaterThan(recorder.events.indexOf(answered));
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+    expect(recorder.events.every((e) => e.turnId === turnId)).toBe(true);
+  });
+
+  it("holds on the CLI's own queued_turn_count after a fold seam the steer had already missed", async () => {
+    // The steer landed once the CLI had drained stdin for its next model
+    // call, before the driver saw that call's tool result. A CLI that
+    // reports queued_turn_count > 0 says a turn follows, and the driver's
+    // own count of the steer agrees: the result is held.
+    const finishGate = join(scratch, "count-first.gate");
+    const continuationGate = join(scratch, "count-continuation.gate");
+    const received = join(scratch, "count-received");
+    await create("slow", {
+      FAKE_CLAUDE_SLOW_FINISH_GATE: finishGate,
+      FAKE_CLAUDE_LATE_STEER_GATE: continuationGate,
+      FAKE_CLAUDE_SLOW_TAIL_TOOL: "1",
+      FAKE_CLAUDE_STEER_RECEIVED: received,
+      FAKE_CLAUDE_QUEUED_TURN_COUNT: "count",
+    });
+    const threadId = "t-late-steer-count";
+    const { turnId } = await instance.adapter.sendTurn({ threadId, text: "first" });
+    await recorder.until((e) => e.type === "item.completed" && e.itemType === "tool");
+    await expect(instance.adapter.steer!(threadId, "and also this")).resolves.toBe("steered");
+    await expect.poll(() => existsSync(received)).toBe(true);
+    writeFileSync(continuationGate, "finish");
+    writeFileSync(finishGate, "finish");
+    const answered = await recorder.until(
+      (e) => e.type === "item.completed" && e.itemType === "assistant_text" && (e as { text: string }).text === "reply to: and also this",
+    );
+    const completed = await recorder.until((e) => e.type === "turn.completed");
+    expect(recorder.events.indexOf(completed)).toBeGreaterThan(recorder.events.indexOf(answered));
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+    // each native turn made its call and its tail call: four seams, all this turn's
+    expect(recorder.events.filter((e) => e.type === "item.completed" && e.itemType === "tool")).toHaveLength(4);
+    expect(recorder.events.every((e) => e.turnId === turnId)).toBe(true);
+  });
+
+  it("holds for a steer that the next tool result did not take in, without the CLI's count", async () => {
+    // The CLI takes stdin as it writes a tool result, and the driver reads
+    // that frame a moment later: a steer written in between was not folded,
+    // and 2.1.282's queued_turn_count stays 0 for it. A tool result says
+    // nothing about which steers it took in, so the driver keeps counting
+    // the steer and holds the result for the continuation.
+    const finishGate = join(scratch, "seam-first.gate");
+    const continuationGate = join(scratch, "seam-continuation.gate");
+    const received = join(scratch, "seam-received");
+    await create("slow", {
+      FAKE_CLAUDE_SLOW_FINISH_GATE: finishGate,
+      FAKE_CLAUDE_LATE_STEER_GATE: continuationGate,
+      FAKE_CLAUDE_SLOW_TAIL_TOOL: "1",
+      FAKE_CLAUDE_STEER_RECEIVED: received,
+      FAKE_CLAUDE_QUEUED_TURN_COUNT: "zero",
+    });
+    const threadId = "t-late-steer-seam";
+    const { turnId } = await instance.adapter.sendTurn({ threadId, text: "first" });
+    await recorder.until((e) => e.type === "item.completed" && e.itemType === "tool");
+    await expect(instance.adapter.steer!(threadId, "and also this")).resolves.toBe("steered");
+    await expect.poll(() => existsSync(received)).toBe(true);
+    writeFileSync(continuationGate, "finish");
+    writeFileSync(finishGate, "finish");
+    const answered = await recorder.until(
+      (e) => e.type === "item.completed" && e.itemType === "assistant_text" && (e as { text: string }).text === "reply to: and also this",
+    );
+    const completed = await recorder.until((e) => e.type === "turn.completed");
+    expect(recorder.events.indexOf(completed)).toBeGreaterThan(recorder.events.indexOf(answered));
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+    expect(recorder.events.every((e) => e.turnId === turnId)).toBe(true);
+  });
+
+  it("closes the turn at once on a steer the CLI echoed as taken in", async () => {
+    // --replay-user-messages: the CLI echoes a folded steer before the reply
+    // that answers it, so the result has nothing left to wait for.
+    const finishGate = join(scratch, "folded-first.gate");
+    const received = join(scratch, "folded-received");
+    await create("slow", {
+      FAKE_CLAUDE_SLOW_FINISH_GATE: finishGate,
+      FAKE_CLAUDE_SLOW_TAIL_TOOL: "1",
+      FAKE_CLAUDE_STEER_RECEIVED: received,
+    });
+    const threadId = "t-folded-steer";
+    const { turnId } = await instance.adapter.sendTurn({ threadId, text: "first" });
+    await recorder.until((e) => e.type === "item.completed" && e.itemType === "tool");
+    await expect(instance.adapter.steer!(threadId, "and also this")).resolves.toBe("steered");
+    await expect.poll(() => existsSync(received)).toBe(true);
+    writeFileSync(finishGate, "finish");
+    const completed = await recorder.until((e) => e.type === "turn.completed");
+    expect(completed).toMatchObject({ turnId, ok: true });
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+    const nativeLog = readFileSync(join(NATIVE_DIR, `${threadId}.ndjson`), "utf8");
+    expect(nativeLog).toContain('"isReplay":true');
+    expect(nativeLog).not.toContain('"hold"');
+  });
+
+  it("holds a folded steer's result for the grace on a CLI that does not echo", async () => {
+    // Before CLAUDE_REPLAY_FLOOR the driver does not ask for the echo, and
+    // nothing the CLI prints says a steer was folded in: the result waits the
+    // grace for an `init` that does not come, then stands as the turn's.
+    process.env.FAKE_CLAUDE_STEER_GRACE_SCALE = "0.05";
+    const finishGate = join(scratch, "folded-old-first.gate");
+    const received = join(scratch, "folded-old-received");
+    const dump = join(scratch, "folded-old-dump.json");
+    await create("slow", {
+      FAKE_CLAUDE_SLOW_FINISH_GATE: finishGate,
+      FAKE_CLAUDE_SLOW_TAIL_TOOL: "1",
+      FAKE_CLAUDE_STEER_RECEIVED: received,
+      FAKE_CLAUDE_DUMP: dump,
+      FAKE_CLAUDE_VERSION: "2.1.281",
+    });
+    await instance.snapshot();
+    const threadId = "t-folded-steer-old";
+    const { turnId } = await instance.adapter.sendTurn({ threadId, text: "first" });
+    await recorder.until((e) => e.type === "item.completed" && e.itemType === "tool");
+    await expect(instance.adapter.steer!(threadId, "and also this")).resolves.toBe("steered");
+    await expect.poll(() => existsSync(received)).toBe(true);
+    writeFileSync(finishGate, "finish");
+    const completed = await recorder.until((e) => e.type === "turn.completed");
+    expect(completed).toMatchObject({ turnId, ok: true });
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+    expect(recorder.events.filter((e) => e.type === "session.started")).toHaveLength(1);
+    expect(JSON.parse(readFileSync(dump, "utf8")).argv).not.toContain("--replay-user-messages");
+    expect(readFileSync(join(NATIVE_DIR, `${threadId}.ndjson`), "utf8")).toContain('"hold"');
+  });
+
+  it("Stop during the held window, before the continuation's init, settles the one turn as interrupted", async () => {
+    // a long grace so the hold cannot lapse on its own while the test looks
+    process.env.FAKE_CLAUDE_STEER_GRACE_SCALE = "5";
+    const finishGate = join(scratch, "held-stop-first.gate");
+    const continuationGate = join(scratch, "held-stop-continuation.gate");
+    const initGate = join(scratch, "held-stop-init.gate");
+    const received = join(scratch, "held-stop-received");
+    await create("slow", {
+      FAKE_CLAUDE_SLOW_FINISH_GATE: finishGate,
+      FAKE_CLAUDE_LATE_STEER_GATE: continuationGate,
+      FAKE_CLAUDE_LATE_STEER_INIT_GATE: initGate,
+      FAKE_CLAUDE_STEER_RECEIVED: received,
+    });
+    const threadId = "t-held-stop";
+    const { turnId } = await instance.adapter.sendTurn({ threadId, text: "first" });
+    await recorder.until((e) => e.type === "item.completed" && e.itemType === "tool");
+    await expect(instance.adapter.steer!(threadId, "and also this")).resolves.toBe("steered");
+    await expect.poll(() => existsSync(received)).toBe(true);
+    writeFileSync(finishGate, "finish");
+    // the first result is held, and nothing has announced the continuation
+    const nativeLog = join(NATIVE_DIR, `${threadId}.ndjson`);
+    await expect.poll(() => existsSync(nativeLog) && readFileSync(nativeLog, "utf8").includes('"hold"')).toBe(true);
+    expect(recorder.events.filter((e) => e.type === "session.started")).toHaveLength(1);
+    expect(recorder.events.some((e) => e.type === "turn.completed")).toBe(false);
+    await instance.adapter.interruptTurn(threadId);
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ turnId, ok: false, stopReason: "interrupted" });
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+    expect(recorder.events.filter((e) => e.type === "session.started")).toHaveLength(1);
+  });
+
+  it("keeps a Stop in the held window an interrupt when the grace lapses before the CLI exits", async () => {
+    // taskkill is asynchronous on Windows: the CLI can outlive a Stop by
+    // longer than the hold's grace. The lapsing grace must leave the turn to
+    // the Stop, not settle it on the held result as a success.
+    process.env.FAKE_CLAUDE_STEER_GRACE_SCALE = "0.5";
+    const finishGate = join(scratch, "held-slow-stop-first.gate");
+    const continuationGate = join(scratch, "held-slow-stop-continuation.gate");
+    const initGate = join(scratch, "held-slow-stop-init.gate");
+    const received = join(scratch, "held-slow-stop-received");
+    await create("slow", {
+      FAKE_CLAUDE_SLOW_FINISH_GATE: finishGate,
+      FAKE_CLAUDE_LATE_STEER_GATE: continuationGate,
+      FAKE_CLAUDE_LATE_STEER_INIT_GATE: initGate,
+      FAKE_CLAUDE_STEER_RECEIVED: received,
+      FAKE_CLAUDE_EXIT_DELAY_MS: String(STEERED_CONTINUATION_GRACE_MS),
+    });
+    const threadId = "t-held-slow-stop";
+    const { turnId } = await instance.adapter.sendTurn({ threadId, text: "first" });
+    await recorder.until((e) => e.type === "item.completed" && e.itemType === "tool");
+    await expect(instance.adapter.steer!(threadId, "and also this")).resolves.toBe("steered");
+    await expect.poll(() => existsSync(received)).toBe(true);
+    writeFileSync(finishGate, "finish");
+    const nativeLog = join(NATIVE_DIR, `${threadId}.ndjson`);
+    await expect.poll(() => existsSync(nativeLog) && readFileSync(nativeLog, "utf8").includes('"hold"')).toBe(true);
+    await instance.adapter.interruptTurn(threadId);
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ turnId, ok: false, stopReason: "interrupted" });
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+  });
+
+  it("gives a steer that lands while a result is held the whole grace", async () => {
+    // A second message steered in near the end of the first one's grace
+    // must get a whole grace of its own to be announced, not what is left
+    // of the first: grace 3 s, the second steer 2 s in, the continuations
+    // let out 3.8 s in.
+    process.env.FAKE_CLAUDE_STEER_GRACE_SCALE = "1.5";
+    const finishGate = join(scratch, "regrace-first.gate");
+    const continuationGate = join(scratch, "regrace-continuation.gate");
+    const initGate = join(scratch, "regrace-init.gate");
+    const received = join(scratch, "regrace-received");
+    await create("slow", {
+      FAKE_CLAUDE_SLOW_FINISH_GATE: finishGate,
+      FAKE_CLAUDE_LATE_STEER_GATE: continuationGate,
+      FAKE_CLAUDE_LATE_STEER_INIT_GATE: initGate,
+      FAKE_CLAUDE_STEER_RECEIVED: received,
+    });
+    const threadId = "t-held-regrace";
+    const { turnId } = await instance.adapter.sendTurn({ threadId, text: "first" });
+    await recorder.until((e) => e.type === "item.completed" && e.itemType === "tool");
+    await expect(instance.adapter.steer!(threadId, "and also this")).resolves.toBe("steered");
+    await expect.poll(() => existsSync(received)).toBe(true);
+    writeFileSync(finishGate, "finish");
+    const nativeLog = join(NATIVE_DIR, `${threadId}.ndjson`);
+    await expect.poll(() => existsSync(nativeLog) && readFileSync(nativeLog, "utf8").includes('"hold"'), { interval: 20 }).toBe(true);
+    const heldAt = Date.now();
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    await expect(instance.adapter.steer!(threadId, "and one more")).resolves.toBe("steered");
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, heldAt + 3_800 - Date.now())));
+    writeFileSync(continuationGate, "finish");
+    writeFileSync(initGate, "init");
+    const second = await recorder.until(
+      (e) => e.type === "item.completed" && e.itemType === "assistant_text" && (e as { text: string }).text === "reply to: and one more",
+    );
+    const completed = await recorder.until((e) => e.type === "turn.completed");
+    expect(completed).toMatchObject({ turnId, ok: true });
+    expect(recorder.events.indexOf(completed)).toBeGreaterThan(recorder.events.indexOf(second));
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+  });
+
+  it("closes a steered continuation that announces itself and then stays silent", async () => {
+    // A held result waits for the continuation's `init`; after that its
+    // first frame — status, thinking, text — must follow within a bound, or
+    // the turn (and its internal tool pass) would stay open until the stall
+    // watchdog. Only the silence bound is scaled down (30 s → 600 ms); the
+    // 2 s grace before `init` stays, so a slow worker cannot lapse the hold
+    // before the driver has read the init frame.
+    process.env.FAKE_CLAUDE_STEER_SILENCE_SCALE = "0.02";
+    const finishGate = join(scratch, "silent-first.gate");
+    const continuationGate = join(scratch, "silent-continuation.gate");
+    const received = join(scratch, "silent-received");
+    await create("slow", {
+      FAKE_CLAUDE_SLOW_FINISH_GATE: finishGate,
+      FAKE_CLAUDE_LATE_STEER_GATE: continuationGate,
+      FAKE_CLAUDE_LATE_STEER_SILENT: "1",
+      FAKE_CLAUDE_STEER_RECEIVED: received,
+    });
+    const threadId = "t-silent-continuation";
+    const { turnId } = await instance.adapter.sendTurn({ threadId, text: "first" });
+    await recorder.until((e) => e.type === "item.completed" && e.itemType === "tool");
+    await expect(instance.adapter.steer!(threadId, "and also this")).resolves.toBe("steered");
+    await expect.poll(() => existsSync(received)).toBe(true);
+    writeFileSync(finishGate, "finish");
+    // the continuation announced itself...
+    await recorder.until(() => recorder.events.filter((e) => e.type === "session.started").length === 2);
+    // ...and never said another word: the held result closes the turn
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ turnId, ok: true, stopReason: "end_turn" });
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+    expect(recorder.events.some((e) => e.type === "runtime.error" && e.message.includes("steered"))).toBe(true);
+    await expect(instance.adapter.steer!(threadId, "late")).resolves.toBe("refused");
+  });
+
+  it("Stop during a steered continuation settles the one turn as interrupted", async () => {
+    const finishGate = join(scratch, "late-steer-stop-first.gate");
+    const continuationGate = join(scratch, "late-steer-stop-continuation.gate");
+    const received = join(scratch, "late-steer-stop-received");
+    await create("slow", {
+      FAKE_CLAUDE_SLOW_FINISH_GATE: finishGate,
+      FAKE_CLAUDE_LATE_STEER_GATE: continuationGate,
+      FAKE_CLAUDE_STEER_RECEIVED: received,
+    });
+    const { turnId } = await instance.adapter.sendTurn({ threadId: "t-late-steer-stop", text: "first" });
+    await recorder.until((e) => e.type === "item.completed" && e.itemType === "tool");
+    await expect(instance.adapter.steer!("t-late-steer-stop", "and also this")).resolves.toBe("steered");
+    await expect.poll(() => existsSync(received)).toBe(true);
+    writeFileSync(finishGate, "finish");
+    // the continuation is running — its tool call landed — and holds on its gate
+    await expect.poll(() => recorder.events.filter((e) => e.type === "item.completed" && e.itemType === "tool").length).toBe(2);
+    await instance.adapter.interruptTurn("t-late-steer-stop");
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ turnId, ok: false, stopReason: "interrupted" });
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+  });
+
   it.each([false, true])("reuses the live process for the next compatible turn, explicit cursor: %s", async (withCursor) => {
     await create();
     const dump = join(scratch, "dump.json");
@@ -1866,6 +2411,71 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(readFileSync(dump, "utf8")).toBe(dumpBefore);
     expect(recorder.events.filter((e) => e.type === "turn.started")).toHaveLength(2);
     expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(2);
+  });
+
+  it("books each turn of a retained process at its own cost, not the process's running total", async () => {
+    // The CLI's total_cost_usd counts every turn the process has run (the
+    // fake reports 0.01, 0.02, 0.03); the harness books each
+    // turn.completed cost as that turn's spend.
+    await create();
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    const costs: unknown[] = [];
+    let launch: string | undefined;
+    for (const text of ["one", "two", "three"]) {
+      const { turnId } = await instance.adapter.sendTurn({ threadId: "t-running-total", text });
+      costs.push((await recorder.until((e) => e.type === "turn.completed" && e.turnId === turnId) as { cost?: unknown }).cost);
+      launch ??= readFileSync(dump, "utf8");
+      // one process for all three turns: a relaunch would rewrite the dump
+      expect(readFileSync(dump, "utf8")).toBe(launch);
+    }
+    expect(costs).toEqual([0.01, 0.01, 0.01]);
+  });
+
+  it.each([false, true])("books a resumed session's first turn at its own cost, not the total the CLI restored (driver restarted: %s)", async (restarted) => {
+    // A --resume launch starts from the session's saved running cost: the
+    // fake's new process reports 0.02 for a turn that cost 0.01.
+    const costState = join(scratch, "cost-state");
+    mkdirSync(costState);
+    await create(undefined, { FAKE_CLAUDE_COST_STATE: costState });
+    const threadId = `t-resumed-cost-${restarted}`;
+    const first = await instance.adapter.sendTurn({ threadId, text: "one", system: "Before.", systemStable: "Before." });
+    const firstDone = await recorder.until((e) => e.type === "turn.completed" && e.turnId === first.turnId);
+    const announced = (recorder.events.find((e) => e.type === "session.started") as { sessionId: string }).sessionId;
+    if (restarted) {
+      // an app restart: nothing the driver held in memory survives
+      recorder.stop();
+      await instance.dispose();
+      await create(undefined, { FAKE_CLAUDE_COST_STATE: costState });
+    }
+    // a changed prompt relaunches the CLI, resuming the same session
+    const second = await instance.adapter.sendTurn({ threadId, text: "two", system: "After.", systemStable: "After.", resumeCursor: announced });
+    const secondDone = await recorder.until((e) => e.type === "turn.completed" && e.turnId === second.turnId);
+    expect(JSON.parse(readFileSync(join(costState, `${announced}.json`), "utf8")).total).toBe(0.02);
+    expect([firstDone, secondDone].map((e) => (e as { cost?: unknown }).cost)).toEqual([0.01, 0.01]);
+  });
+
+  it("measures a resumed process from the restored cost even when its first result has none", async () => {
+    // An overloaded API answers the first turn after --resume with an error
+    // result that carries no total_cost_usd. The next turn on that process
+    // must still be measured from what the CLI restored, not booked whole.
+    const costState = join(scratch, "cost-state-error");
+    mkdirSync(costState);
+    const dump = join(scratch, "resumed-error-dump.json");
+    await create(undefined, { FAKE_CLAUDE_COST_STATE: costState, FAKE_CLAUDE_RESUMED_API_ERROR: "1", FAKE_CLAUDE_DUMP: dump });
+    const threadId = "t-resumed-error-cost";
+    const first = await instance.adapter.sendTurn({ threadId, text: "one", system: "Before.", systemStable: "Before." });
+    await recorder.until((e) => e.type === "turn.completed" && e.turnId === first.turnId);
+    const announced = (recorder.events.find((e) => e.type === "session.started") as { sessionId: string }).sessionId;
+    const failed = await instance.adapter.sendTurn({ threadId, text: "two", system: "After.", systemStable: "After.", resumeCursor: announced });
+    expect(await recorder.until((e) => e.type === "turn.completed" && e.turnId === failed.turnId)).toMatchObject({ ok: false, cost: null });
+    const launch = readFileSync(dump, "utf8");
+    const third = await instance.adapter.sendTurn({ threadId, text: "three", system: "After.", systemStable: "After.", resumeCursor: announced });
+    const thirdDone = await recorder.until((e) => e.type === "turn.completed" && e.turnId === third.turnId);
+    // the same resumed process, whose total now reads 0.02
+    expect(readFileSync(dump, "utf8")).toBe(launch);
+    expect(JSON.parse(readFileSync(join(costState, `${announced}.json`), "utf8")).total).toBe(0.02);
+    expect(thirdDone).toMatchObject({ ok: true, cost: 0.01 });
   });
 
   it.each([false, true])("resets retained native context even with an old cursor supplied: %s", async (withCursor) => {
@@ -2654,27 +3264,82 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     const names = ["XAI_API_KEY", "COMPOSIO_API_KEY", "BOX_TOKEN", "OPENCODE_API_KEY", "OMB_TTS_KEY"] as const;
     for (const name of names) process.env[name] = `${name}-must-not-leak`;
 
-    await instance.generateText?.("summarize safely");
+    await expect(instance.generateText?.("summarize safely")).resolves.toBe("fake generated text");
 
     const seen = JSON.parse(readFileSync(dump, "utf8"));
     expect(seen.prompt).toBe("summarize safely");
     expect(seen.argv).not.toContain("summarize safely");
+    expect(seen.argv[seen.argv.indexOf("--output-format") + 1]).toBe("text");
     expect(seen.env.CLAUDE_CONFIG_DIR).toBe(instanceConfigDir);
     for (const name of names) expect(seen.env[name]).toBeUndefined();
   });
 
   it("declares safe same-provider permission review", async () => {
     await create();
+    const dump = join(scratch, "permission-review.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
     await expect(instance.reviewPermission?.("review this request")).resolves.toBe("fake generated text");
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.argv[seen.argv.indexOf("--output-format") + 1]).toBe("text");
+  });
+
+  it("reports the actual one-shot model, total input, cached input and cost once", async () => {
+    await create(undefined, { FAKE_CLAUDE_TEXT_RESULT: JSON.stringify({
+      type: "result", result: "  captured memory  ", is_error: false,
+      usage: { input_tokens: 10, cache_read_input_tokens: 20, cache_creation_input_tokens: 3, output_tokens: 5 },
+      total_cost_usd: 0.004,
+      modelUsage: { "claude-haiku-4-5-20251001": { costUSD: 0.004 } },
+    }) });
+    const dump = join(scratch, "text-usage.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    const onUsage = vi.fn();
+    await expect(instance.generateText!("capture memory", { onUsage })).resolves.toBe("captured memory");
+    expect(onUsage.mock.calls).toEqual([[{ model: "claude-haiku-4-5-20251001", input: 33, output: 5, cachedInput: 20, costUsd: 0.004 }]]);
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.argv[seen.argv.indexOf("--output-format") + 1]).toBe("json");
+    expect(seen.argv[seen.argv.indexOf("--model") + 1]).toBe("claude-haiku-4-5");
+    expect(recorder.events).toEqual([]);
+  });
+
+  it.each([
+    [{}, undefined],
+    [{ usage: { input_tokens: "12", output_tokens: -1 }, total_cost_usd: null }, undefined],
+    [{ usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 }, total_cost_usd: 0 }, 0],
+  ])("keeps missing usage unknown and preserves explicit zeroes (%j)", async (metadata, expected) => {
+    await create(undefined, { FAKE_CLAUDE_TEXT_RESULT: JSON.stringify({ type: "result", result: "done", ...metadata }) }, { managedModels: ["managed-helper"] });
+    const onUsage = vi.fn();
+    await expect(instance.generateText!("summarize", { onUsage })).resolves.toBe("done");
+    expect(onUsage.mock.calls).toEqual([[{ model: "managed-helper", input: expected, output: expected, cachedInput: expected, costUsd: expected }]]);
+  });
+
+  it.each([false, true])("reports usage before rejecting an error result (nonzero exit: %s)", async nonzeroExit => {
+    const failureFile = join(scratch, "failure.txt");
+    writeFileSync(failureFile, "__FAIL__");
+    await create(undefined, {
+      ...(nonzeroExit ? { FAKE_CLAUDE_TEXT_FILE: failureFile } : {}),
+      FAKE_CLAUDE_TEXT_RESULT: JSON.stringify({ type: "result", is_error: true, result: "synthetic billed failure", total_cost_usd: 0.01 }),
+    });
+    const onUsage = vi.fn();
+    await expect(instance.generateText!("summarize", { onUsage })).rejects.toThrow("synthetic billed failure");
+    expect(onUsage.mock.calls).toEqual([[{ model: "claude-haiku-4-5", input: undefined, output: undefined, cachedInput: undefined, costUsd: 0.01 }]]);
+  });
+
+  it.each(["not JSON", '{"type":"assistant"}'])("rejects malformed one-shot output without invented usage (%s)", async result => {
+    await create(undefined, { FAKE_CLAUDE_TEXT_RESULT: result });
+    const onUsage = vi.fn();
+    await expect(instance.generateText!("summarize", { onUsage })).rejects.toThrow();
+    expect(onUsage).not.toHaveBeenCalled();
   });
 
   it("stops the one-shot text call when its caller aborts mid-flight", async () => {
     await create();
     process.env.FAKE_CLAUDE_TEXT_HANG = "1";
     const controller = new AbortController();
+    const onUsage = vi.fn();
     setTimeout(() => controller.abort(), 100);
-    await expect(instance.generateText?.("summarize safely", { signal: controller.signal }))
+    await expect(instance.generateText?.("summarize safely", { signal: controller.signal, onUsage }))
       .rejects.toThrow(/aborted/);
+    expect(onUsage).not.toHaveBeenCalled();
   });
 
   it("stops permission review when its caller gives up", async () => {

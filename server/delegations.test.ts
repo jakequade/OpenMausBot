@@ -4,7 +4,7 @@
 // assert what would have been dispatched to the harness. The harness itself
 // stays out of these — the integration happens in comms.test.ts (the full
 // e2e through the agents proxy + fake ACP CLI).
-import { mkdirSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CommsBus } from "./comms-visibility.ts";
@@ -122,6 +122,16 @@ describe("queueDelegation", () => {
     expect(_pendingCount(from.threadId)).toBe(0);
   });
 
+  it("lets a cross-bot send start a new ownership chain at the depth cap", () => {
+    const result = queueDelegation(commsBus, from, {
+      toBotId: target.id,
+      message: "own this",
+      depth: 1,
+      oneWay: true,
+    }, 1);
+    expect(result.result).toBe("ok");
+  });
+
   it("rejects when the target bot does not exist", () => {
     const result = queueDelegation(commsBus, from, {
       toBotId: "ghost",
@@ -132,18 +142,15 @@ describe("queueDelegation", () => {
     expect(_pendingCount(from.threadId)).toBe(0);
   });
 
-  it("does not accept or announce work whose queue cannot be persisted", () => {
-    mkdirSync(join(DATA_DIR, "delegations.json"));
-    const result = queueDelegation(commsBus, from, {
-      toBotId: target.id,
-      message: "must survive restart",
-      depth: 0,
-      deliveryId: "durable-handoff",
-      oneWay: true,
-    }, 1);
-    expect(result).toEqual({ result: "persistence_failed" });
-    expect(_pendingCount(from.threadId)).toBe(0);
-    expect(broadcasts).toEqual([]);
+  it("accepts six handoffs per source thread and refuses the seventh", () => {
+    const item = { toBotId: target.id, message: "next task", depth: 0 };
+    for (let index = 0; index < 6; index++) {
+      expect(queueDelegation(commsBus, from, item, 1).result).toBe("ok");
+    }
+    expect(queueDelegation(commsBus, from, item, 1).result).toBe("too_many");
+    expect(_pendingCount(from.threadId)).toBe(6);
+    const sibling = store.createTask(from.id, "Separate work", false)!;
+    expect(queueDelegation(commsBus, from, item, 1, sibling.threadId).result).toBe("ok");
   });
 
   it("queues, broadcasts, and drops a 'Delegated to @Target' chip on the source thread", () => {
@@ -238,62 +245,6 @@ describe("drainDelegations", () => {
     // double-check by counting the module's pending map: tests that didn't
     // resolve should be re-examined if this ever fires.
     void runTargetCalls;
-  });
-
-  it("keeps a one-way send queued across source failure and restart, then dispatches at depth zero", async () => {
-    let free = false;
-    const bus: CommsBus = { ...commsBus, threadSlotFree: () => free };
-    const opened = store.createTask(target.id, "Release owner", false)!;
-    const queued = queueDelegation(bus, from, {
-      toBotId: target.id,
-      message: "Own the release",
-      depth: 0,
-      targetThreadId: opened.threadId,
-      approvalAlreadyGranted: true,
-      oneWay: true,
-      deliveryId: "handoff-restart-proof",
-    }, 1);
-    expect(queued).toMatchObject({ result: "ok", id: "handoff-restart-proof" });
-    expect(queueDelegation(bus, from, {
-      toBotId: target.id, message: "Own the release", depth: 0, targetThreadId: opened.threadId,
-      approvalAlreadyGranted: true, oneWay: true, deliveryId: "handoff-restart-proof",
-    }, 1)).toMatchObject({ result: "ok", id: "handoff-restart-proof" });
-
-    drainDelegations(bus, approvalBus, from.threadId, vi.fn());
-    await waitFor(() => pendingDelegationInfo("handoff-restart-proof")?.waiting);
-    expect(store.messagesFor(opened.threadId).some(message => message.tool?.name?.includes("waiting for a free slot"))).toBe(true);
-    discardDelegations(bus, from.threadId);
-    expect(pendingDelegationInfo("handoff-restart-proof")).not.toBeNull();
-
-    _resetPending();
-    _loadPending();
-    expect(pendingDelegationInfo("handoff-restart-proof")).not.toBeNull();
-    free = true;
-    releaseDelegationsWaitingOn(target.id);
-    const runTarget = vi.fn();
-    drainDelegations(bus, approvalBus, from.threadId, runTarget);
-    await waitFor(() => runTarget.mock.calls.length === 1);
-    expect(runTarget.mock.calls[0]?.[2]).toBe(0);
-    expect(runTarget.mock.calls[0]?.[8]).toBe(true);
-    await waitFor(() => _pendingCount(from.threadId) === 0);
-  });
-
-  it("does not redispatch a handoff whose recipient line survived a restart", async () => {
-    const opened = store.createTask(target.id, "Release owner", false)!;
-    queueDelegation(commsBus, from, {
-      toBotId: target.id, message: "Own the release", depth: 0, targetThreadId: opened.threadId,
-      approvalAlreadyGranted: true, oneWay: true, deliveryId: "handoff-already-delivered",
-    }, 1);
-    store.appendMessage(opened.threadId, {
-      role: "user", kind: "text", text: "Own the release",
-      peerAsk: { botId: from.id, name: from.name },
-    });
-    _resetPending();
-    _loadPending();
-    const runTarget = vi.fn();
-    drainDelegations(commsBus, approvalBus, from.threadId, runTarget);
-    await waitFor(() => _pendingCount(from.threadId) === 0);
-    expect(runTarget).not.toHaveBeenCalled();
   });
 
   it("runs the target's turn via runTarget and mirrors the exchange", async () => {
@@ -473,23 +424,6 @@ describe("drainDelegations", () => {
       store.messagesFor(from.threadId).some((message) =>
         message.tool?.name.includes("is no longer an allowed peer")),
     ).toBe(true);
-  });
-
-  it("reports post-accept peer revocation only in the one-way recipient thread", async () => {
-    const opened = store.createTask(target.id, "Revoked handoff", false)!;
-    const queued = queueDelegation(commsBus, from, {
-      toBotId: target.id, message: "do this", depth: 0, targetThreadId: opened.threadId,
-      oneWay: true, approvalAlreadyGranted: true, deliveryId: "revoked-one-way",
-    }, 1);
-    store.patchBot(from.id, { peers: [] });
-    drainDelegations(commsBus, approvalBus, from.threadId, vi.fn());
-    await waitFor(() => findDelegationReceipt(queued.id!) && _pendingCount(from.threadId) === 0);
-    expect(findDelegationReceipt(queued.id!)).toMatchObject({
-      status: "dropped", oneWay: true, targetThreadId: opened.threadId,
-      result: expect.stringContaining("no longer allowed to contact"),
-    });
-    expect(store.messagesFor(opened.threadId).some(message => message.tool?.ok === false)).toBe(true);
-    expect(store.messagesFor(from.threadId).some(message => message.tool?.ok === false)).toBe(false);
   });
 
   it("still dispatches a queued handoff to a target the allow-list covers", async () => {
@@ -900,24 +834,6 @@ describe("delegations survive a restart", () => {
     expect(pendingThreads()).toEqual([]);
   });
 
-  it("does not rerun terminal work when restart restores both its receipt and stale queue row", async () => {
-    const opened = store.createTask(target.id, "Terminal handoff", false)!;
-    const queued = queueDelegation(buses.commsBus, from, {
-      toBotId: target.id, message: "must not run again", depth: 0,
-      targetThreadId: opened.threadId, oneWay: true, deliveryId: "terminal-window",
-    }, 1);
-    recordDelegationReceipt({
-      id: queued.id!, sourceThreadId: from.threadId, toBotId: target.id, toBotName: target.name,
-      status: "dropped", result: "access was revoked", oneWay: true, targetThreadId: opened.threadId,
-    });
-    _resetPending();
-    _loadPending();
-    const runTarget = vi.fn();
-    drainDelegations(buses.commsBus, buses.approvalBus, from.threadId, runTarget);
-    await waitFor(() => pendingThreads().length === 0);
-    expect(runTarget).not.toHaveBeenCalled();
-  });
-
   it("tolerates a missing or corrupt file", () => {
     _resetPending();
     _loadPending(); // no file
@@ -1245,12 +1161,63 @@ describe("busy waits and expiry", () => {
     expect(findDelegationReceipt("bulk-3")).toBeNull(); // oldest pruned
   });
 
+  it.each([false, true])("recovers a one-way failure notice after a restart (notice already written: %s)", async (noticeWritten) => {
+    const opened = store.createTask(target.id, "Owned work", false)!;
+    const queued = queueDelegation(commsBus, from, {
+      toBotId: target.id, message: "check this", depth: 0,
+      targetThreadId: opened.threadId, oneWay: true,
+    }, 1);
+    recordDelegationReceipt({
+      id: queued.id!, sourceThreadId: from.threadId, toBotId: target.id,
+      toBotName: target.name, status: "dropped", result: "access revoked",
+    });
+    if (noticeWritten) store.appendMessage(opened.threadId, {
+      role: "bot", kind: "activity",
+      tool: { name: "Send failed — access revoked", ok: false, handoffId: queued.id },
+    });
+    _resetPending();
+    _loadPending();
+    const runTarget = vi.fn();
+    drainDelegations(commsBus, approvalBus, from.threadId, runTarget);
+    await waitFor(() => _pendingCount(from.threadId) === 0);
+    expect(runTarget).not.toHaveBeenCalled();
+    expect(store.messagesFor(opened.threadId).filter((message) => message.tool?.handoffId === queued.id)).toHaveLength(1);
+  });
+
+  it("does not treat a persisted inbound line as a completed one-way turn", async () => {
+    const opened = store.createTask(target.id, "Owned work", false)!;
+    const queued = queueDelegation(commsBus, from, {
+      toBotId: target.id, message: "check this", depth: 0,
+      targetThreadId: opened.threadId, oneWay: true,
+    }, 1);
+    store.appendMessage(opened.threadId, {
+      role: "user", kind: "text", text: "check this",
+      peerAsk: { botId: from.id, name: from.name },
+    });
+    _resetPending();
+    _loadPending();
+    const runTarget = vi.fn();
+    drainDelegations(commsBus, approvalBus, from.threadId, runTarget);
+    await waitFor(() => runTarget.mock.calls.length === 1);
+    expect(runTarget.mock.calls[0]?.[5]).toBe(queued.id);
+  });
+
   it("writes a dropped receipt for every handoff a failed turn discards", async () => {
     const queued = queueDelegation(commsBus, from, { toBotId: target.id, message: "never runs", depth: 0 }, 1);
     const { discardDelegations } = await import("./delegations.ts");
     discardDelegations(commsBus, from.threadId);
     expect(_pendingCount(from.threadId)).toBe(0);
     expect(findDelegationReceipt(queued.id!)).toMatchObject({ status: "dropped" });
+  });
+
+  it("keeps an accepted one-way send when its source turn fails", () => {
+    const opened = store.createTask(target.id, "Owned work", false)!;
+    queueDelegation(commsBus, from, {
+      toBotId: target.id, message: "keep running", depth: 0,
+      targetThreadId: opened.threadId, oneWay: true,
+    }, 1);
+    discardDelegations(commsBus, from.threadId);
+    expect(_pendingCount(from.threadId)).toBe(1);
   });
 
   it("expires a handoff nobody could take within 24 hours, and wakes the delegator", async () => {
@@ -1608,7 +1575,8 @@ describe("peer wake helpers", () => {
     let now = 1_000_000;
     const budget = new DelegationWakeBudget(() => now);
 
-    for (let i = 0; i < DELEGATION_WAKE_MAX_PER_WINDOW; i++) {
+    expect(DELEGATION_WAKE_MAX_PER_WINDOW).toBe(6);
+    for (let i = 0; i < 6; i++) {
       expect(budget.tryAcquire("t1")).toBe(true);
     }
     // cap reached — no further wakes within the same window

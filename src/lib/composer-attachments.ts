@@ -878,6 +878,16 @@ export function composerTakesFocusOnOpen(active: OpenFocusNode | null, input: Co
   return !active.closest?.("[role=dialog], [role=alertdialog], [aria-modal=true]");
 }
 
+/**
+ * Whether a change of reply target should put the caret in the composer.
+ * Choosing a message to reply to means the next thing is typing the reply,
+ * so a newly chosen target takes focus (MOCA-263). Clearing the reply, or the
+ * same target arriving again as the draft re-renders, does not.
+ */
+export function replyTargetTakesFocus(previousId: string | null | undefined, nextId: string | null | undefined): boolean {
+  return Boolean(nextId) && nextId !== previousId;
+}
+
 // This file is also compiled for the server, which has no DOM types; the rule
 // only needs these members of the real elements.
 type FocusNode = object;

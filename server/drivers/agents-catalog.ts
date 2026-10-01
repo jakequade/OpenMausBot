@@ -29,6 +29,10 @@ export interface CatalogProfile {
   sharedComputers: boolean;
   /** A voice is actually configured for this bot (tts voiceReady). */
   voiceNotes: boolean;
+  /** The server is a Cloud home (server/cloud-home.ts): no "this computer"
+   * of the person's and no Local VM to offer. */
+  cloudHome: boolean;
+  memoryEnabled?: boolean;
   /** Written into start_thread's schema in a coordinating turn. */
   botId: string;
 }
@@ -44,6 +48,8 @@ export function catalogProfileFromEnv(env: NodeJS.ProcessEnv): CatalogProfile {
     skillAuthoring: env.OMB_SKILL_AUTHORING_ENABLED === "1",
     sharedComputers: env.OMB_SHARED_COMPUTERS_ENABLED === "1",
     voiceNotes: env.OMB_VOICE_NOTES === "1",
+    cloudHome: env.OMB_CLOUD_HOME === "1",
+    memoryEnabled: env.OMB_MEMORY_ENABLED !== "0",
     botId: env.OMB_BOT_ID ?? "",
   };
 }
@@ -158,8 +164,9 @@ const ROUTINE_FIELDS_SCHEMA = {
   schedule: ROUTINE_SCHEDULE_SCHEMA,
   run_on: {
     type: "string",
+    // "box" is Boat's historical run_on destination id (agents wire contract).
     enum: ["maus", "box"],
-    description: "Default maus keeps the bot's selected model and configured computer, INCLUDING a self-hosted VPS. Omit this field for normal schedules. box explicitly switches the agent to the Box-hosted runner; it requires Box setup and is not the generic cloud/VPS option. Legacy cloud values from list_routines mean box, not VPS.",
+    description: "Default maus keeps the bot's selected model and configured computer, INCLUDING a self-hosted VPS. Omit this field for normal schedules. box explicitly switches the agent to the Boat-hosted runner; it requires Boat setup and is not the generic cloud/VPS option. Legacy cloud values from list_routines mean box, not VPS.",
   },
   timeout_minutes: {
     type: "integer",
@@ -242,25 +249,25 @@ const toolDefinitions = (externalRuntime: boolean) => [
   },
   {
     name: "coordinate_bots",
-    description: "Ask existing OpenMausBot teammates for advice or assign concrete work. From normal chat every assignment you send a teammate continues your one standing conversation with that teammate, so they keep the context of what you asked before; from a room it defaults to this room. Use group_id from list_room_targets for a specific room. Give 1-4 bot_ids — teammate ids as list_bots or your roster prints them; a unique teammate name also resolves: they receive only your brief and use their own model, tools and permissions. Busy bots queue. They can consult their specialists; all results return here and resume you automatically. Include exact file paths, constraints and what must be verified. After sending all assignments, END your turn; do not poll or wait. On return, resolve tradeoffs, verify the requested outcome and request concrete corrections if necessary before giving one final answer. Do not send acknowledgements as new work.",
+    description: "Ask existing OpenMausBot teammates for advice or assign concrete work. From normal chat each distinct assignment starts a fresh thread for that teammate; from a room it defaults to this room. Give a self-contained brief. Use group_id from list_room_targets for a specific room. Give 1-4 bot_ids — teammate ids as list_bots or your roster prints them; a unique teammate name also resolves: they receive only your brief and use their own model, tools and permissions. Busy bots queue. They can consult their specialists; all results return here and resume you automatically. Include exact file paths, constraints and what must be verified. After sending all assignments, END your turn; do not poll or wait. On return, resolve tradeoffs, verify the requested outcome and request concrete corrections if necessary before giving one final answer. Do not send acknowledgements as new work.",
     inputSchema: { type: "object", additionalProperties: false, properties: {
-      group_id: { type: "string", description: "Optional destination room. Omit for this room, or your standing conversation with each teammate when chatting directly." },
+      group_id: { type: "string", description: "Optional destination room. Omit for this room, or a fresh thread for each teammate when chatting directly." },
       bot_ids: { type: "array", items: { type: "string", description: "A teammate's id exactly as list_bots or your roster prints it ([id: …]). A teammate's unique display name also resolves; a name shared by two reachable teammates is refused." }, minItems: 1, maxItems: 4, uniqueItems: true },
       message: { type: "string", minLength: 1, maxLength: 4000, description: "Self-contained question or task for these teammates. Send separate requests when responsibilities differ." },
       request_key: { type: "string", description: "A short unique assignment key. Reuse for an identical retry." },
       rework: { type: "boolean", description: "True only for concrete additional work from someone who already completed a request." },
-      label: { type: "string", description: "Optional short name (one line, at most 60 characters) for this job. Used only when the teammate is still working on your previous assignment and this one therefore runs in its own thread beside your standing conversation." },
+      label: { type: "string", description: "Optional short name (one line, at most 60 characters) for this job. Names the new direct assignment thread." },
     }, required: ["bot_ids", "message", "request_key"] },
   },
   {
     name: "send_to_bot",
-    description: "Send one self-contained job to one reachable teammate in a fresh thread. The recipient gets only your brief plus a link to this source conversation; the link grants no access. You receive a durable receipt linking their thread, then stop: their results, failures and questions stay there and never resume you. Use the same request_key for an identical retry; it returns the original thread without running twice. Use coordinate_bots instead when you need results returned here. Do not send without a complete, task-agnostic brief.",
+    description: "Send work one way to another bot in a fresh thread. This is cross-bot only: use start_thread to send independent work to yourself. The recipient owns the new thread; its results, failures and questions stay there and never resume you. Use coordinate_bots when you need the result returned here.",
     inputSchema: { type: "object", additionalProperties: false, properties: {
-      bot_id: { type: "string", description: "Exactly one reachable teammate id from list_bots or list_room_targets; a unique teammate name also resolves." },
-      brief: { type: "string", minLength: 1, maxLength: 20_000, description: "Complete freeform instructions and context needed to continue without this transcript." },
-      request_key: { type: "string", description: "A short unique send key. Reuse it only for an identical retry." },
-      title: { type: "string", description: "Optional one-line recipient thread title, at most 80 characters. Defaults to the brief's first line." },
-    }, required: ["bot_id", "brief", "request_key"] },
+      bot_id: { type: "string", description: "One reachable teammate id from list_bots or list_room_targets." },
+      title: { type: "string", description: "A short one-line title, at most 80 characters." },
+      message: { type: "string", description: "Complete instructions; the recipient does not inherit this conversation." },
+      request_key: { type: "string", description: "A short unique key for this assignment. Reuse it for an identical retry." },
+    }, required: ["bot_id", "title", "message", "request_key"] },
   },
   {
     name: "list_bots",
@@ -340,7 +347,7 @@ const toolDefinitions = (externalRuntime: boolean) => [
       "Choose where this conversation does computer work. Call with no arguments to inspect actual available choices and the current place. For a task needing computer interaction, select the requested place, or auto to choose a suitable configured computer without asking the user to use menus. OpenMausBot reuses an existing computer first; with a configured provider it can start or provision one when needed. Do not provision for ordinary chat or just to inspect availability. A pending result means end this turn immediately: OpenMausBot updates the conversation selector and resumes the original request with that computer's real tools. Do not use the old tools after requesting a switch, repeat the task, or claim the action is done. This cannot change permissions, override Off, or switch a teammate/routine/channel.",
     inputSchema: { type: "object", additionalProperties: false, properties: {
       surface: { type: "string", enum: ["auto", "cloud", "vm", "local", "browser"],
-        description: "auto = suitable configured computer, cloud = remote Box/VPS, vm = isolated Local VM, local = user's own desktop, browser = built-in browser. Omit to list." },
+        description: "auto = suitable configured computer, cloud = remote Boat/VPS, vm = isolated Local VM, local = user's own desktop, browser = built-in browser. Omit to list." },
     } },
   },
   {
@@ -582,6 +589,7 @@ const toolDefinitions = (externalRuntime: boolean) => [
         action: { type: "string", enum: ["append", "replace", "remove", "supersede"] },
         text: { type: "string", minLength: 1, description: "Non-blank new text for append, replace, or supersede: the fact itself, without a date or bullet. Omit for remove; use remove to delete a passage." },
         old_text: { type: "string", minLength: 1, description: "Exact unique existing passage for replace, supersede, or remove. Omit for append." },
+        until: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "Optional, for append or supersede: YYYY-MM-DD, the last day a temporary fact holds (an exam this weekend, a trip next week). After that day the entry is hidden from your memory." },
       },
       required: ["action"],
     },
@@ -681,12 +689,17 @@ const toolDefinitions = (externalRuntime: boolean) => [
   {
     name: "propose_routine_action",
     description:
-      "Prepare a user-requested change to one of this bot's existing routines. Use list_routines first to get the routine id." + PROPOSAL_OUTCOME,
+      "Prepare a user-requested change to one of this bot's existing routines. Use list_routines first to get the routine id. If the user asks to change ANOTHER bot's routine and that bot is in your section, call list_bots and pass that bot's id as for_bot_id; the routine keeps its owner and every run keeps that bot's engine and permissions." + PROPOSAL_OUTCOME,
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
         routine_id: { type: "string", minLength: 1, description: "Routine id from list_routines." },
+        for_bot_id: {
+          type: "string",
+          description:
+            "Only when the requested change targets ANOTHER bot's routine and that bot is in your section: that bot's id from list_bots. Learn the routine id from that bot's own routines (it can run list_routines). Omit to change one of your own routines.",
+        },
         action: {
           type: "string",
           enum: ["update", "pause", "resume", "run_now", "delete"],
@@ -827,12 +840,29 @@ const ROOM_REPLACED_TOOLS = new Set(["ask_bot", "delegate_bot", "check_delegatio
 const EXTERNAL_TOOL_NAMES = new Set(["list_bots", "ask_bot", "delegate_bot", "check_delegation", "wait_delegation"]);
 const WATCHER_TOOL_NAMES = new Set(["create_options_card"]);
 
+// A Cloud home never offers this computer or a Local VM, so its bots are not
+// shown them as choices, nor a VM shell they could never have.
+const LOCAL_VM_TOOL_NAMES = new Set(["vm_exec"]);
+const CLOUD_HOME_SURFACE = {
+  type: "string", enum: ["auto", "cloud", "browser"],
+  description: "auto = suitable configured computer, cloud = remote Boat/VPS, browser = built-in browser. Omit to list. This server runs in the cloud: the user's own computer and a Local VM are not places here.",
+};
+
 /** The tools one turn is shown, exactly as tools/list serializes them. */
 export function availableTools(profile: CatalogProfile) {
+  const tools = catalogTools(profile);
+  return profile.cloudHome
+    ? tools.filter(tool => !LOCAL_VM_TOOL_NAMES.has(tool.name)).map(tool => tool.name === "select_computer"
+      ? { ...tool, inputSchema: { ...tool.inputSchema, properties: { surface: CLOUD_HOME_SURFACE } } }
+      : tool)
+    : tools;
+}
+
+function catalogTools(profile: CatalogProfile) {
   const TOOLS = toolDefinitions(profile.externalRuntime);
-  const BOT_SCOPED_TOOLS = profile.botId === WATCHER_OPTIONS_CARD_BOT_ID
-    ? TOOLS
-    : TOOLS.filter((tool) => !WATCHER_TOOL_NAMES.has(tool.name));
+  const BOT_SCOPED_TOOLS = TOOLS.filter((tool) =>
+    (profile.botId === WATCHER_OPTIONS_CARD_BOT_ID || !WATCHER_TOOL_NAMES.has(tool.name)) &&
+    (profile.memoryEnabled !== false || (tool.name !== "memory_update" && tool.name !== "memory_log")));
   const AUTHORING_TOOLS = profile.skillAuthoring
     ? BOT_SCOPED_TOOLS
     : BOT_SCOPED_TOOLS.filter((tool) => !SKILL_TOOL_NAMES.has(tool.name));

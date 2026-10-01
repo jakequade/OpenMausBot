@@ -8,7 +8,7 @@ import {
   withCitationComment,
   type CitationAttachment,
 } from "@/lib/citations";
-import { captureCitationSelection } from "@/lib/citations-dom";
+import { captureCitationSelection, citationTabShortcut } from "@/lib/citations-dom";
 
 type Point = { left: number; top: number };
 
@@ -106,6 +106,7 @@ export function CitationSelectionToolbar({
   onAdd: (citation: CitationAttachment) => void;
 }) {
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const tabShortcut = useRef(citationTabShortcut()).current;
   const [captured, setCaptured] = useState<{
     citation: CitationAttachment;
     point: Point;
@@ -113,6 +114,7 @@ export function CitationSelectionToolbar({
   const [editing, setEditing] = useState(false);
 
   useEffect(() => {
+    if (!captured) tabShortcut.reset();
     const update = () => {
       if (editing) return;
       const viewport = viewportRef.current;
@@ -140,10 +142,7 @@ export function CitationSelectionToolbar({
     viewportRef.current?.addEventListener("pointerup", update);
     viewportRef.current?.addEventListener("keyup", update);
     const focusAction = (event: KeyboardEvent) => {
-      if (event.key === "Tab" && !event.shiftKey && captured && !editing) {
-        event.preventDefault();
-        buttonRef.current?.focus({ preventScroll: true });
-      }
+      if (captured && !editing) tabShortcut.handle(event, buttonRef.current);
     };
     document.addEventListener("keydown", focusAction, true);
     return () => {
@@ -152,7 +151,7 @@ export function CitationSelectionToolbar({
       viewportRef.current?.removeEventListener("keyup", update);
       document.removeEventListener("keydown", focusAction, true);
     };
-  }, [captured, editing, viewportRef]);
+  }, [captured, editing, tabShortcut, viewportRef]);
 
   useLayoutEffect(() => {
     if (!captured || editing) return;

@@ -22,6 +22,7 @@ import {
   type ImageAttachment,
   composerShouldRefocus,
   composerTakesFocusOnOpen,
+  replyTargetTakesFocus,
 } from "./composer-attachments";
 
 /** Exercises the spacing and empty-draft cases for pasted text insertion. */
@@ -712,6 +713,21 @@ describe("composerShouldRefocus", () => {
 
   it("leaves focus alone when the writer moved elsewhere", () => {
     expect(composerShouldRefocus(el(sidebar), input)).toBe(false);
+  });
+});
+
+// MOCA-263: clicking Reply left the caret outside the draft, so the reply
+// could not be typed without clicking the box first.
+describe("replyTargetTakesFocus", () => {
+  it("focuses the draft when a message is chosen to reply to, or the target changes", () => {
+    expect(replyTargetTakesFocus(null, "m1")).toBe(true);
+    expect(replyTargetTakesFocus(undefined, "m1")).toBe(true);
+    expect(replyTargetTakesFocus("m1", "m2")).toBe(true);
+  });
+  it("leaves focus alone when the reply is cleared or the same target renders again", () => {
+    expect(replyTargetTakesFocus("m1", null)).toBe(false);
+    expect(replyTargetTakesFocus(null, null)).toBe(false);
+    expect(replyTargetTakesFocus("m1", "m1")).toBe(false);
   });
 });
 

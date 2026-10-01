@@ -94,15 +94,10 @@ export async function runRoomHandoffAgent(argv: string[], planPath: string, prom
       await call("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "room-fixture", version: "1" } });
       evidence.push(await call("tools/list"));
       evidence.push(await call("tools/call", { name: "list_room_targets", arguments: {} }));
-      const runStep = async (step: any) => {
+      for (const step of steps) {
         const response = await call("tools/call", { name: step.tool ?? "coordinate_bots", arguments: step.arguments });
+        evidence.push({ step, response });
         if (Boolean(response.error || response.result?.isError) !== Boolean(step.expectError)) throw new Error(`Unexpected tool outcome: ${JSON.stringify(response)}`);
-        return { step, response };
-      };
-      if (plan.parallelSteps) {
-        evidence.push(...await Promise.all(steps.map(runStep)));
-      } else {
-        for (const step of steps) evidence.push(await runStep(step));
       }
       if (typeof plan.progress === "string") progress?.(plan.progress);
       // All MCP calls have completed. An explicit test gate is owned by the

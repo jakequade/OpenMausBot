@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { composeMessage, isAttachment } from "./composer-attachments";
 import {
   citationAttachment,
@@ -10,7 +10,7 @@ import {
   splitTranscriptCitations,
   withCitationComment,
 } from "./citations";
-import { findCitationSource } from "./citations-dom";
+import { citationTabShortcut, findCitationSource, highlightCitationSource } from "./citations-dom";
 
 const source = { ownerType: "bot" as const, ownerId: "bot-1", threadId: "thread-1", messageId: "message-1" };
 
@@ -84,5 +84,115 @@ describe("selected-text citations", () => {
     const document = { querySelectorAll: () => [unrelated, moved] } as unknown as Document;
     expect(findCitationSource(document, citation)).toBe(moved);
     expect(findCitationSource({ querySelectorAll: () => [unrelated] } as unknown as Document, citation)).toBeNull();
+  });
+
+  it("moves the first forward Tab from a selection to the cite action and leaves later Tabs alone", () => {
+    const tab = (shiftKey = false, key = "Tab") => ({ key, shiftKey, preventDefault: vi.fn() });
+    const action = (disabled: boolean) => ({ disabled, focus: vi.fn() }) as unknown as HTMLButtonElement;
+    const shortcut = citationTabShortcut();
+    const enabled = action(false);
+
+    for (const event of [tab(true), tab(false, "ArrowDown")]) {
+      expect(shortcut.handle(event, enabled)).toBe(false);
+      expect(event.preventDefault).not.toHaveBeenCalled();
+    }
+
+    const first = tab();
+    expect(shortcut.handle(first, enabled)).toBe(true);
+    expect(first.preventDefault).toHaveBeenCalledOnce();
+    expect(enabled.focus).toHaveBeenCalledWith({ preventScroll: true });
+
+    const next = tab();
+    expect(shortcut.handle(next, enabled)).toBe(false);
+    expect(next.preventDefault).not.toHaveBeenCalled();
+    expect(enabled.focus).toHaveBeenCalledOnce();
+
+    shortcut.reset();
+    expect(shortcut.handle(tab(), enabled)).toBe(true);
+  });
+
+  it("leaves Tab alone when an oversized selection disables the cite action", () => {
+    const shortcut = citationTabShortcut();
+    const disabled = { disabled: true, focus: vi.fn() } as unknown as HTMLButtonElement;
+    const event = { key: "Tab", shiftKey: false, preventDefault: vi.fn() };
+    expect(shortcut.handle(event, disabled)).toBe(false);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(disabled.focus).not.toHaveBeenCalled();
+    expect(shortcut.handle(event, null)).toBe(false);
+  });
+});
+
+describe("citation source highlight cleanup", () => {
+  const text = "quoted text in the source";
+  const citation = citationAttachment(source, createCitationTextSelector(text, 0, 11)!);
+
+  const stubDom = (css: object) => {
+    const node = { nodeType: 3, data: text, length: text.length };
+    const root = {
+      nodeType: 1,
+      tagName: "DIV",
+      matches: () => false,
+      childNodes: [node],
+      dataset: { citationSource: source.messageId, citationOwnerType: "bot" },
+      scrollIntoView: vi.fn(),
+      ownerDocument: {
+        createRange: () => ({
+          setStart(container: unknown, offset: number) { Object.assign(this, { startContainer: container, startOffset: offset }); },
+          setEnd(container: unknown, offset: number) { Object.assign(this, { endContainer: container, endOffset: offset }); },
+        }),
+      },
+    };
+    const ranges: unknown[] = [];
+    const selection = {
+      get rangeCount() { return ranges.length; },
+      getRangeAt: (index: number) => ranges[index],
+      addRange: (range: unknown) => ranges.push(range),
+      removeAllRanges: vi.fn(() => { ranges.length = 0; }),
+    };
+    vi.useFakeTimers();
+    vi.stubGlobal("Node", { TEXT_NODE: 3, ELEMENT_NODE: 1 });
+    vi.stubGlobal("document", { querySelectorAll: () => [root] });
+    vi.stubGlobal("CSS", css);
+    vi.stubGlobal("window", {
+      setTimeout: (callback: () => void, ms: number) => setTimeout(callback, ms),
+      clearTimeout: (id: number) => clearTimeout(id),
+      getSelection: () => selection,
+    });
+    return { node, ranges, selection };
+  };
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps text the user selects after the highlight instead of clearing it", async () => {
+    const { node, ranges, selection } = stubDom({});
+    expect(await highlightCitationSource(citation)).toBe(true);
+    expect(ranges).toHaveLength(1);
+    ranges[0] = { startContainer: node, startOffset: 12, endContainer: node, endOffset: 16 };
+    vi.advanceTimersByTime(2_500);
+    expect(selection.removeAllRanges).toHaveBeenCalledOnce();
+    expect(ranges).toHaveLength(1);
+  });
+
+  it("clears the highlight selection it installed once it expires", async () => {
+    const { ranges } = stubDom({});
+    await highlightCitationSource(citation);
+    vi.advanceTimersByTime(2_500);
+    expect(ranges).toHaveLength(0);
+  });
+
+  it("does not let an earlier highlight's timer delete a later one", async () => {
+    const highlights = { set: vi.fn(), delete: vi.fn() };
+    stubDom({ highlights });
+    vi.stubGlobal("Highlight", class {});
+    await highlightCitationSource(citation);
+    vi.advanceTimersByTime(1_000);
+    await highlightCitationSource(citation);
+    vi.advanceTimersByTime(1_500);
+    expect(highlights.delete).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1_000);
+    expect(highlights.delete).toHaveBeenCalledOnce();
   });
 });
