@@ -1976,20 +1976,51 @@ describe("messageAdded leaf adoption", () => {
 });
 
 describe("thread ordering stamps", () => {
-  it("leaves a background row in place for bot and peer activity, then moves it for a person", () => {
+  it.each(["first", "second"])("orders terminal completion in active and background threads: %s", threadId => {
     const bot = { id: "b", threadId: "first", messages: [], tasks: [
-      { threadId: "first", createdAt: 1, lastUserMessageAt: 10 },
-      { threadId: "second", createdAt: 2, lastUserMessageAt: 5 },
+      { threadId: "first", createdAt: 1, lastThreadOrderAt: 25 },
+      { threadId: "second", createdAt: 2, lastThreadOrderAt: 5 },
+    ] } as never as Bot;
+    const message = { id: "reply", at: 20, role: "bot", kind: "text", turnId: "turn", turnTerminal: true, turnCompletedAt: 30 } as Message;
+    const state = reducer({ ...initialState, bots: [bot] }, { type: "messagePatched", threadId, message });
+    expect(state.bots[0].tasks?.find(task => task.threadId === threadId)?.lastThreadOrderAt).toBe(30);
+  });
+
+  it.each([false, true])("restores unloaded ordering history and retains newer loaded events: %s", laterReply => {
+    const bot = { id: "b", threadId: "first", messages: [], hasMore: true, tasks: [
+      { threadId: "first", createdAt: 1, lastThreadOrderAt: 25 },
+    ] } as never as Bot;
+    let state = reducer({ ...initialState, bots: [bot] }, { type: "send", botId: "b", text: "Pending", sendId: "send" });
+    if (laterReply) state = reducer(state, { type: "messageAdded", threadId: "first", message: { id: "reply", at: Date.now() + 10, role: "bot", kind: "text" } });
+    const expected = laterReply ? state.bots[0].messages.at(-1)!.at : 25;
+    state = reducer(state, { type: "optimisticMessageRemoved", threadId: "first", sendId: "send" });
+    expect(state.bots[0].tasks?.[0]?.lastThreadOrderAt).toBe(expected);
+  });
+
+  it("restores a channel stamp when rollback history is incomplete", () => {
+    const group = { id: "g", threadId: "room", createdAt: 1, messages: [], hasMore: true,
+      tasks: [{ threadId: "room", createdAt: 1, lastThreadOrderAt: 25 }] } as never as Group;
+    let state = reducer({ ...initialState, groups: [group] }, { type: "sendGroup", groupId: "g", text: "Pending", sendId: "send" });
+    state = reducer(state, { type: "optimisticMessageRemoved", threadId: "room", sendId: "send" });
+    expect(state.groups[0].tasks?.[0]?.lastThreadOrderAt).toBe(25);
+  });
+
+  it("leaves running activity in place, then moves completed replies and person messages", () => {
+    const bot = { id: "b", threadId: "first", messages: [], tasks: [
+      { threadId: "first", createdAt: 1, lastThreadOrderAt: 10 },
+      { threadId: "second", createdAt: 2, lastThreadOrderAt: 5 },
     ] } as never as Bot;
     let state = { ...initialState, bots: [bot] };
     const add = (message: Message) => { state = reducer(state, { type: "messageAdded", threadId: "second", message }); };
-    add({ id: "reply", at: 20, role: "bot", kind: "text", text: "Done" });
+    add({ id: "reply", at: 20, role: "bot", kind: "text", text: "Working", turnId: "turn-1" });
     add({ id: "peer", at: 21, role: "user", kind: "text", text: "Peer", peerAsk: { botId: "p", name: "Peer" } });
-    expect(state.bots[0].tasks?.[1]?.lastUserMessageAt).toBe(5);
+    expect(state.bots[0].tasks?.[1]?.lastThreadOrderAt).toBe(5);
+    state = reducer(state, { type: "messagePatched", threadId: "second", message: { id: "reply", at: 20, role: "bot", kind: "text", text: "Done", turnId: "turn-1", turnTerminal: true } });
+    expect(state.bots[0].tasks?.[1]?.lastThreadOrderAt).toBe(20);
     add({ id: "person", at: 22, role: "user", kind: "text", text: "Hello" });
-    expect(state.bots[0].tasks?.[1]?.lastUserMessageAt).toBe(22);
+    expect(state.bots[0].tasks?.[1]?.lastThreadOrderAt).toBe(22);
     state = reducer(state, { type: "hydrate", bots: [bot], groups: [], computerControl: {} });
-    expect(state.bots[0].tasks?.[1]?.lastUserMessageAt).toBe(22);
+    expect(state.bots[0].tasks?.[1]?.lastThreadOrderAt).toBe(22);
   });
 });
 

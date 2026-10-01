@@ -144,7 +144,7 @@ export interface WireTask {
   /** Epoch ms of the newest message, or createdAt when the thread has none.
    * Server-derived. Clients must not write it. */
   updatedAt?: number;
-  lastUserMessageAt?: number;
+  lastThreadOrderAt?: number;
   /** When the person snoozed this thread. 0 means "until new activity" and
    * the store clears it the moment the thread wakes; a future epoch ms means
    * "until then" and reads treat an expired value as absent, so no timer or
@@ -480,6 +480,7 @@ export interface WireMessage {
   requestPending?: boolean;
   /** The last assistant text item from a settled provider turn. */
   turnTerminal?: boolean;
+  turnCompletedAt?: number;
   /** screen messages: a frame of the bot's computer (base64 image) */
   png?: string;
   mime?: string;
@@ -514,6 +515,9 @@ export interface WireMessage {
   /** steer-queue entry this drained user line came from. */
   queueId?: string;
 }
+
+export const movesThreadToTop = (message: Pick<WireMessage, "role" | "kind" | "peerAsk" | "turnId" | "turnTerminal">): boolean =>
+  message.role === "user" ? !message.peerAsk : message.kind === "text" && (message.turnTerminal === true || !message.turnId);
 
 export interface OptionCardData {
   /** calls: one per outbound call the card covers, in subtitle order. Absent
@@ -658,7 +662,7 @@ export interface GroupTask {
   turnTimeoutMinutes?: number;
   /** Epoch ms of the newest message, or createdAt when the thread has none. */
   updatedAt?: number;
-  lastUserMessageAt?: number;
+  lastThreadOrderAt?: number;
   /** The first message already drove a title attempt for this thread, so a
    * later one does not rename a room the person may have retitled. */
   titleFromFirstMessage?: true;
