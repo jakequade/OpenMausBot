@@ -910,7 +910,7 @@ export class Store {
 
   /** Advance a task's update stamp in memory only. Message writes must not
    * rewrite bots.json; the next snapshot and the startup repair read this. */
-  private noteThreadActivity(threadId: string, at: number): void {
+  private noteThreadActivity(threadId: string, at: number, user = false): void {
     if (!Number.isFinite(at)) return;
     const advance = (current: number | undefined) => Math.max(current ?? 0, at);
     for (const bot of this.bots) {
@@ -918,12 +918,14 @@ export class Store {
       if (!task) continue;
       const next = advance(task.updatedAt);
       if (task.updatedAt !== next) task.updatedAt = next;
+      if (user) task.lastUserMessageAt = advance(task.lastUserMessageAt);
     }
     for (const group of this.groups) {
       const task = group.tasks?.find((candidate) => candidate.threadId === threadId);
       if (!task) continue;
       const next = advance(task.updatedAt);
       if (task.updatedAt !== next) task.updatedAt = next;
+      if (user) task.lastUserMessageAt = advance(task.lastUserMessageAt);
     }
   }
 
@@ -934,16 +936,20 @@ export class Store {
     const botTasks = this.bots.flatMap((bot) => bot.tasks ?? []);
     const groupTasks = this.groups.flatMap((group) => group.tasks ?? []);
     const latest = mdb.latestMessageAts([...botTasks, ...groupTasks].map((task) => task.threadId));
+    const latestUser = mdb.latestMessageAts([...botTasks, ...groupTasks].map((task) => task.threadId), true);
     let botsDirty = false;
     let groupsDirty = false;
-    const repair = (task: { threadId: string; createdAt: number; updatedAt?: number }) => {
+    const repair = (task: { threadId: string; createdAt: number; updatedAt?: number; lastUserMessageAt?: number }) => {
       const fromMessages = latest.get(task.threadId);
       const next = fromMessages !== undefined && (task.updatedAt === undefined || fromMessages > task.updatedAt)
         ? fromMessages
         : task.updatedAt ?? task.createdAt;
-      if (task.updatedAt === next) return false;
+      const fromUser = latestUser.get(task.threadId);
+      const userAt = fromUser === undefined ? task.lastUserMessageAt : Math.max(task.lastUserMessageAt ?? task.createdAt, fromUser);
+      const changed = task.updatedAt !== next || task.lastUserMessageAt !== userAt;
       task.updatedAt = next;
-      return true;
+      task.lastUserMessageAt = userAt;
+      return changed;
     };
     for (const task of botTasks) if (repair(task)) botsDirty = true;
     for (const task of groupTasks) if (repair(task)) groupsDirty = true;
@@ -1503,6 +1509,8 @@ export class Store {
     this.threads.delete(threadId);
     const newest = messages.reduce((max, message) => Math.max(max, message.at), Number.NEGATIVE_INFINITY);
     if (Number.isFinite(newest)) this.noteThreadActivity(threadId, newest);
+    const newestUser = messages.reduce((max, message) => message.role === "user" && !message.peerAsk ? Math.max(max, message.at) : max, Number.NEGATIVE_INFINITY);
+    if (Number.isFinite(newestUser)) this.noteThreadActivity(threadId, newestUser, true);
   }
 
   activeLeaf(threadId: string): string | null {
@@ -1553,7 +1561,7 @@ export class Store {
         this.emit({ type: "message.patch", threadId, message: pruned });
       }
     }
-    this.noteThreadActivity(threadId, full.at);
+    this.noteThreadActivity(threadId, full.at, full.role === "user" && !full.peerAsk);
     this.emit({ type: "message", threadId, message: full });
     // The first-run quiz is not a live ask. Talking past it hides it so the
     // transcript is just the greeting plus what they said. Cards with a
@@ -1583,7 +1591,7 @@ export class Store {
         this.emit({ type: "message.patch", threadId, message: pruned });
       }
     }
-    this.noteThreadActivity(threadId, full.at);
+    this.noteThreadActivity(threadId, full.at, full.role === "user" && !full.peerAsk);
     this.emit({ type: "message", threadId, message: full });
     // announced after the insert so no client ever sees two siblings
     // claiming the same parent
@@ -1644,7 +1652,7 @@ export class Store {
     t.messages.push(full);
     t.activeLeafId = full.id;
     mdb.appendMessage(threadId, full);
-    this.noteThreadActivity(threadId, full.at);
+    this.noteThreadActivity(threadId, full.at, true);
     this.emit({ type: "message", threadId, message: full });
     // The message frame alone leaves every client on the OLD branch: a
     // client adopts a new message as its leaf only when it chains onto the
