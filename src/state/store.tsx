@@ -939,7 +939,7 @@ export interface AppState {
   computerControl: Record<string, { held: boolean; helpReason: string | null }>;
   /** a search hit to scroll to once its thread is on screen; nonce lets the
    * same message be focused twice in a row */
-  focusMessage: { threadId: string; messageId: string; nonce: number; consumed: boolean } | null;
+  focusMessage: { threadId: string; messageId: string; matchText?: string; nonce: number; consumed: boolean } | null;
   connected: boolean;
   error: string | null;
   /** a quiet, non-error line above the transcript; clears itself */
@@ -1190,7 +1190,7 @@ export type Action =
   | { type: "toggleNewBot"; open?: boolean }
   | { type: "toggleComputer"; open?: boolean }
   | { type: "toggleInspector"; open?: boolean }
-  | { type: "focusMessage"; threadId: string; messageId: string }
+  | { type: "focusMessage"; threadId: string; messageId: string; matchText?: string }
   | { type: "focusMessageConsumed"; nonce: number }
   | { type: "toggleAppSettings"; open?: boolean; section?: AppSettingsSection; cloudLink?: boolean }
   | { type: "toggleShortcuts"; open?: boolean }
@@ -1991,6 +1991,7 @@ export function reducer(state: AppState, action: Action): AppState {
         focusMessage: {
           threadId: action.threadId,
           messageId: action.messageId,
+          matchText: action.matchText,
           nonce: (state.focusMessage?.nonce ?? 0) + 1,
           consumed: false,
         },
