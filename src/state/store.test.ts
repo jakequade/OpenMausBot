@@ -1964,20 +1964,22 @@ describe("messageAdded leaf adoption", () => {
 });
 
 describe("thread ordering stamps", () => {
-  it("leaves a background row in place for bot and peer activity, then moves it for a person", () => {
+  it("leaves running activity in place, then moves completed replies and person messages", () => {
     const bot = { id: "b", threadId: "first", messages: [], tasks: [
-      { threadId: "first", createdAt: 1, lastUserMessageAt: 10 },
-      { threadId: "second", createdAt: 2, lastUserMessageAt: 5 },
+      { threadId: "first", createdAt: 1, lastThreadOrderAt: 10 },
+      { threadId: "second", createdAt: 2, lastThreadOrderAt: 5 },
     ] } as never as Bot;
     let state = { ...initialState, bots: [bot] };
     const add = (message: Message) => { state = reducer(state, { type: "messageAdded", threadId: "second", message }); };
-    add({ id: "reply", at: 20, role: "bot", kind: "text", text: "Done" });
+    add({ id: "reply", at: 20, role: "bot", kind: "text", text: "Working", turnId: "turn-1" });
     add({ id: "peer", at: 21, role: "user", kind: "text", text: "Peer", peerAsk: { botId: "p", name: "Peer" } });
-    expect(state.bots[0].tasks?.[1]?.lastUserMessageAt).toBe(5);
+    expect(state.bots[0].tasks?.[1]?.lastThreadOrderAt).toBe(5);
+    state = reducer(state, { type: "messagePatched", threadId: "second", message: { id: "reply", at: 20, role: "bot", kind: "text", text: "Done", turnId: "turn-1", turnTerminal: true } });
+    expect(state.bots[0].tasks?.[1]?.lastThreadOrderAt).toBe(20);
     add({ id: "person", at: 22, role: "user", kind: "text", text: "Hello" });
-    expect(state.bots[0].tasks?.[1]?.lastUserMessageAt).toBe(22);
+    expect(state.bots[0].tasks?.[1]?.lastThreadOrderAt).toBe(22);
     state = reducer(state, { type: "hydrate", bots: [bot], groups: [], computerControl: {} });
-    expect(state.bots[0].tasks?.[1]?.lastUserMessageAt).toBe(22);
+    expect(state.bots[0].tasks?.[1]?.lastThreadOrderAt).toBe(22);
   });
 });
 
