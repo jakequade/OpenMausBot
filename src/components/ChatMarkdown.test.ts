@@ -322,6 +322,22 @@ describe("ChatMarkdown attachments", () => {
     expect(html).not.toContain("C:/Users/Maus/report.md");
   });
 
+  it("shows desktop open and reveal controls only for a scoped file link", () => {
+    vi.stubGlobal("window", { ogb: { messageFileAction: vi.fn() } });
+    try {
+      const html = renderToStaticMarkup(createElement(ChatMarkdown, {
+        text: "[Report](/workspace/report.md)",
+        message: { threadId: "thread-1", messageId: "message-1" },
+      }));
+      expect(html).toContain('aria-label="Open file"');
+      expect(html).toContain('aria-label="Reveal in folder"');
+      const legacy = renderToStaticMarkup(createElement(ChatMarkdown, { text: "[Report](/workspace/report.md)" }));
+      expect(legacy).not.toContain('aria-label="Open file"');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("routes a backslash Windows path through the scoped file handlers, every backslash intact", () => {
     const save = vi.spyOn(AttachmentPreview, "useLocalFileSave");
     const preview = vi.spyOn(AttachmentPreview, "MarkdownImagePreview");

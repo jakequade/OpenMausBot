@@ -254,6 +254,7 @@ describe("message-linked files", () => {
     const relative = await openMessageFile("release%20notes.md#today", [workspace]);
     expect(relative).toMatchObject({
       bytes: 18,
+      path,
       name: "release notes.md",
       mime: "text/markdown; charset=utf-8",
     });
