@@ -16,6 +16,8 @@ export const MESSAGE_FILE_MAX_BYTES = 25 * 1024 * 1024;
 export interface OpenedMessageFile {
   handle: FileHandle;
   path: string;
+  dev: number;
+  ino: number;
   bytes: number;
   name: string;
   mime: string;
@@ -433,6 +435,8 @@ export async function openMessageFile(href: string, roots: readonly string[], al
       return {
         handle,
         path: canonicalAfter,
+        dev: opened.dev,
+        ino: opened.ino,
         bytes: opened.size,
         name: basename(canonicalAfter),
         mime: mimeFor(canonicalAfter),

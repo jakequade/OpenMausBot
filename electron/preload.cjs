@@ -256,8 +256,8 @@ const bridge = {
       const message = String(error?.message ?? error);
       throw new Error(message.replace(/^Error invoking remote method '[^']*':\s*(?:Error:\s*)?/, ""));
     }),
-  messageFileAction: (message, filePath, action) =>
-    ipcRenderer.invoke("desktop:message-file-action", message, filePath, action).catch((error) => {
+  revealMessageFile: (message, filePath) =>
+    ipcRenderer.invoke("desktop:reveal-message-file", message, filePath).catch((error) => {
       const detail = String(error?.message ?? error);
       throw new Error(detail.replace(/^Error invoking remote method '[^']*':\s*(?:Error:\s*)?/, ""));
     }),

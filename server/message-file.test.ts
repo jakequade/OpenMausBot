@@ -255,6 +255,8 @@ describe("message-linked files", () => {
     expect(relative).toMatchObject({
       bytes: 18,
       path,
+      dev: expect.any(Number),
+      ino: expect.any(Number),
       name: "release notes.md",
       mime: "text/markdown; charset=utf-8",
     });

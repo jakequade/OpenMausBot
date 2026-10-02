@@ -17990,7 +17990,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const file = await openMessageFile(href, roots, locatesMessageFile);
       if (locatesMessageFile) {
         await file.handle.close();
-        return json(res, 200, { path: file.path });
+        return json(res, 200, { path: file.path, dev: file.dev, ino: file.ino });
       }
       if ((streamsMessageImage || botAttachment?.kind === "image") && !file.mime.startsWith("image/")) {
         await file.handle.close();

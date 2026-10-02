@@ -20,7 +20,7 @@ import Markdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-import { Check, Copy, Download, ExternalLink, FolderOpen, LoaderCircle, RotateCcw, WrapText } from "lucide-react";
+import { Check, Copy, Download, FolderOpen, LoaderCircle, RotateCcw, WrapText } from "lucide-react";
 import { remarkMentions, type MentionPeer } from "@/lib/mentions";
 
 import {
@@ -600,10 +600,10 @@ function LocalFileLink({ filePath, children, message }: { filePath: string; chil
       : save.state === "failed"
         ? "Retry"
         : null;
-  const act = async (action: "open" | "reveal") => {
+  const reveal = async () => {
     try {
       setActionError("");
-      await window.ogb?.messageFileAction?.(message, filePath, action);
+      await window.ogb?.revealMessageFile?.(message, filePath);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "That file is unavailable");
     }
@@ -629,10 +629,9 @@ function LocalFileLink({ filePath, children, message }: { filePath: string; chil
           <Download size={12} className="shrink-0" aria-hidden="true" />
         )}
       </button>
-      {typeof window !== "undefined" && window.ogb?.messageFileAction && (
+      {typeof window !== "undefined" && window.ogb?.revealMessageFile && (
         <span className="pointer-events-none absolute start-0 top-full z-10 inline-flex items-center gap-2 rounded-md border border-hairline bg-card px-2 py-1 opacity-0 shadow-sm transition-opacity group-hover/file:pointer-events-auto group-hover/file:opacity-100 group-focus-within/file:pointer-events-auto group-focus-within/file:opacity-100">
-          <button type="button" onClick={() => void act("open")} title="Open file" aria-label="Open file" className="inline-flex items-center gap-0.5 text-[12px] text-accent hover:underline focus-visible:underline"><ExternalLink size={12} aria-hidden="true" />Open</button>
-          <button type="button" onClick={() => void act("reveal")} title="Reveal in folder" aria-label="Reveal in folder" className="inline-flex items-center gap-0.5 text-[12px] text-accent hover:underline focus-visible:underline"><FolderOpen size={12} aria-hidden="true" />Reveal</button>
+          <button type="button" onClick={() => void reveal()} title="Reveal in folder" aria-label="Reveal in folder" className="inline-flex items-center gap-0.5 text-[12px] text-accent hover:underline focus-visible:underline"><FolderOpen size={12} aria-hidden="true" />Reveal</button>
         </span>
       )}
       {actionError && <span role="alert" className="text-[12px] text-danger">{actionError}</span>}

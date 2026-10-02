@@ -2739,11 +2739,11 @@ const workspaceOnly = (handler) => (event, ...args) => {
   return handler(event, ...args);
 };
 const localWorkspaceOnly = (channel, handler) => localOnly(channel, workspaceOnly(handler));
-ipcMain.handle("desktop:message-file-action", localWorkspaceOnly("desktop:message-file-action", async (_event, message, filePath, action) => {
+ipcMain.handle("desktop:reveal-message-file", localWorkspaceOnly("desktop:reveal-message-file", async (_event, message, filePath) => {
   if (activeEnvironment(environmentsState) || desktopRemoteAccess || !serverProc || !serverReady) throw new Error("Local files are unavailable here");
   if (!message || !/^[\w-]+$/.test(message.threadId) || !/^[\w-]+$/.test(message.messageId) ||
-      typeof filePath !== "string" || !filePath || Buffer.byteLength(filePath) > 8_192 || !["open", "reveal"].includes(action)) {
-    throw new Error("Invalid file action");
+      typeof filePath !== "string" || !filePath || Buffer.byteLength(filePath) > 8_192) {
+    throw new Error("Invalid file path");
   }
   const proc = serverProc;
   const route = `/api/threads/${message.threadId}/messages/${message.messageId}/file?locate=1`;
@@ -2757,11 +2757,10 @@ ipcMain.handle("desktop:message-file-action", localWorkspaceOnly("desktop:messag
   if (proc !== serverProc || !serverReady || activeEnvironment(environmentsState)) throw new Error("Local files are unavailable here");
   if (!response.ok) throw new Error(result.error || "That file is unavailable");
   if (typeof result.path !== "string" || !path.isAbsolute(result.path)) throw new Error("That file is unavailable");
-  if (action === "reveal") shell.showItemInFolder(result.path);
-  else {
-    const error = await shell.openPath(result.path);
-    if (error) throw new Error(error);
-  }
+  const current = await fs.promises.realpath(result.path).catch(() => null);
+  const stats = current && await fs.promises.stat(current).catch(() => null);
+  if (current !== result.path || !stats?.isFile() || stats.dev !== result.dev || stats.ino !== result.ino) throw new Error("That file changed. Try again.");
+  shell.showItemInFolder(result.path);
 }));
 // Personal Cloud authority stays in main. No renderer-supplied address, token,
 // paid flag or callback can choose an account or activate Pro.
