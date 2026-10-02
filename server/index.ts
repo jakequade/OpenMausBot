@@ -17987,7 +17987,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         roots = messageFileRootsForThread(senderId, threadId);
       }
 
-      const file = await openMessageFile(href, roots);
+      const file = await openMessageFile(href, roots, locatesMessageFile);
       if (locatesMessageFile) {
         await file.handle.close();
         return json(res, 200, { path: file.path });

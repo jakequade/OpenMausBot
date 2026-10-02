@@ -319,6 +319,9 @@ describe("message-linked files", () => {
     writeFileSync(large, "x");
     truncateSync(large, MESSAGE_FILE_MAX_BYTES + 1);
     await expect(openMessageFile(large, [workspace])).rejects.toMatchObject({ status: 413 });
+    const located = await openMessageFile(large, [workspace], true);
+    expect(located.path).toBe(large);
+    await located.handle.close();
   });
 
   it("refuses traversal and a symlink that resolves outside the allowed root", async () => {
