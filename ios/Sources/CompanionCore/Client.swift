@@ -1544,6 +1544,65 @@ public struct CompanionClient: Sendable {
             }
     }
 
+    // MARK: - Live calls
+
+    /// How long a call may take to start. The Mac creates the OpenAI session
+    /// (up to 20 s) before it answers, and the sidecar allows 30 s until
+    /// response headers; the usual 20 s here would give up first.
+    public static let liveCallStartTimeout: TimeInterval = 35
+
+    /// Start a Live call: the phone's SDP offer goes to the Mac, which creates
+    /// the GPT-Live session with its own key and returns OpenAI's answer.
+    ///
+    /// The two 409s carry structure `check` would drop — `needsKey` (no key on
+    /// the Mac) and `activeCall` (who is on the line) — so they are read here
+    /// first and thrown as `LiveCallStartError`. Everything else is the usual
+    /// `APIError` with the Mac's own message.
+    public func startLiveCall(botId: String, threadId: String?, sdp: String) async throws -> LiveCallStart {
+        guard Self.validRouteID(botId), threadId.map(Self.validRouteID) ?? true else { throw APIError.badURL }
+        var body: [String: Any] = ["botId": botId, "sdp": sdp, "client": "ios"]
+        if let threadId { body["threadId"] = threadId }
+        var request = try makeRequest("POST", "/api/live/session", body: body)
+        request.timeoutInterval = Self.liveCallStartTimeout
+        let (data, response) = try await perform(request)
+        if let http = response as? HTTPURLResponse, http.statusCode == 409,
+           let refusal = try? JSONDecoder().decode(LiveCallRefusalBody.self, from: data) {
+            if refusal.needsKey == true { throw LiveCallStartError.needsKey(message: refusal.error) }
+            if let active = refusal.activeCall { throw LiveCallStartError.busy(active: active, message: refusal.error) }
+        }
+        try Self.check(response, data)
+        do {
+            return try JSONDecoder().decode(LiveCallStart.self, from: data)
+        } catch {
+            throw APIError.transport("The computer sent something this app couldn't read.")
+        }
+    }
+
+    /// Hang up. A 404 means the Mac no longer runs that call — which is what
+    /// the caller wanted — so it reads as `nil` rather than an error.
+    public func endLiveCall(callId: String) async throws -> LiveCallState? {
+        do {
+            return try await send(try makeRequest("POST", "/api/live/call/end", body: ["callId": callId]), as: LiveCallEnvelope.self).call
+        } catch let APIError.status(code, _) where code == 404 {
+            return nil
+        }
+    }
+
+    /// The call the Mac is running right now, if any. A phone that connects
+    /// mid-call asks this once after hydrating; the stream carries changes.
+    public func liveCall() async throws -> LiveCallState? {
+        try await send(try makeRequest("GET", "/api/live/call"), as: LiveCallEnvelope.self).call
+    }
+
+    /// Change the non-secret Live settings on the Mac. The key is not a
+    /// field on `LiveSettingsPatch`, and the Mac answers 400 if one is sent.
+    public func updateLiveSettings(_ patch: LiveSettingsPatch) async throws -> LiveSettings {
+        try await send(
+            try makeRequest("PATCH", "/api/live/settings", encodedBody: patch),
+            as: LiveSettingsEnvelope.self
+        ).live
+    }
+
     private static func validRouteID(_ value: String) -> Bool {
         !value.isEmpty && value.utf8.allSatisfy { byte in
             (48...57).contains(byte) || (65...90).contains(byte) || (97...122).contains(byte)

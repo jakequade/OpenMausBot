@@ -283,6 +283,96 @@ port — only the route to it is different.
 
 ---
 
+## Stage 6 — Live calls
+
+A Live call is GPT-Live as the voice and the bot as the brain. The Mac runs
+the call and keeps the OpenAI key; the phone holds the microphone and the
+speaker and talks to OpenAI directly over WebRTC. Needs: phone and Mac paired
+(Stage 4), an OpenAI key set up in OpenMausBot on the Mac (the desktop asks
+for it the first time you start a Live call there; the gear on the desktop's
+call bar changes or removes it), and a real iPhone. The Simulator can carry
+a call's audio through the Mac's microphone and speakers (once macOS lets it
+use the microphone), but not the phone's own audio routes, headsets or
+interruptions.
+
+1. **Start.** Open a bot's chat and tap the phone icon in the header. The
+   first time on this phone, a note says what a call sends to OpenAI: "A
+   Live call sends your voice to OpenAI, along with the chat's recent
+   messages, the bot's answers and the details of any approval it asks
+   for. The OpenAI key stays on your computer." with Start call and Cancel.
+   Cancel starts nothing, and the next tap shows the note again; Start call
+   starts the call, and the note never comes back on this phone. The first
+   time, iOS then asks for the microphone; the call does not start until
+   you answer. The bar above the composer reads "Calling …", "Connecting…",
+   then "Live with <bot> · 0:00", counting up from the moment the call went
+   live (the Mac attached and the phone's channel open). Hang up works from
+   "Calling …" on. If the bar stays on "Connecting…" for more than about ten seconds, the
+   phone's audio is not getting through to OpenAI from this network: check
+   the phone's connection. After 20 seconds without audio the phone ends the
+   call itself: "Call dropped: the audio could not connect." with Try again.
+2. **Talk.** Say "what can you do?" Your words appear in grey on the bar's
+   caption line while you speak; the voice's words replace them. Your
+   request lands in the chat labelled *via call*; the bot's activity and
+   answer follow, and the voice reads the answer back.
+3. **Type.** Send a typed message during the call. The bot answers it in the
+   chat and the voice mentions it (unless "Read replies to typed messages"
+   is off under the gear). The composer's microphone button is disabled
+   during the call, and a voice note in the chat says "Voice notes can’t
+   play during a Live call." with its play button off until you hang up.
+4. **Mute.** The mute button turns red; the voice keeps talking; unmute.
+5. **Gear.** Voice, Sound output (speaker or earpiece — applies at once),
+   Read replies to typed messages, with "When this is off, messages you
+   type during a call and the bot's answers to them are not sent to
+   OpenAI." under it, Hang up after silence (1, 2, 3, 5, 10, 15, 30 or 60
+   minutes, the same choices as on the desktop). The OpenAI key row says
+   "Managed on your computer", and under it the sheet says "A Live call
+   sends your voice to OpenAI, along with the chat's recent messages, the
+   bot's answers and the details of any approval it asks for. The OpenAI
+   key stays on your computer."
+6. **Headset.** Start a call with Speaker chosen and AirPods (or wired
+   earbuds) in: the voice is in the earbuds, not the loudspeaker, and the
+   earbuds' microphone hears you. Take them out: the call moves to the
+   loudspeaker. Put them back: it moves to them again. Choosing Speaker or
+   Earpiece while they are in leaves the call in them.
+7. **Elsewhere.** Go back to the roster: a green "On a call with <bot>"
+   banner sits under the header; tap it to return. Another bot's chat shows
+   the same banner.
+8. **Hang up.** The bar disappears. Start again: the call bills OpenAI per
+   second, so do not leave one running.
+9. **Background.** On a call, press Home or lock the phone: the call ends
+   within a few seconds (on the desktop, the bot's "on a Live call from an
+   iPhone" bar goes away). Background calls are a later feature.
+10. **Interruptions.** Receive a phone call during a Live call: the Live
+    call ends.
+11. **Two devices.** Start a Live call on the Mac, then open the same bot's
+    chat on the phone: a bar "Live with <bot> · m:ss" over "From your
+    computer", with a hang-up; the phone icon is hidden. While the Mac is on a call the phone
+    icon is hidden in every chat, so the phone can only run into the Mac's
+    call when both start at the same moment: it then says "Your computer is
+    on a call with <bot>." with no Try again.
+12. **No key.** Remove the key on the Mac (desktop call bar → gear → Remove
+    key) and tap the phone icon: "Set up Live calls on your computer first."
+13. **Unpaired mid-call.** On a call, remove this phone on the Mac
+    (Settings → Phone). The call ends at once, and the "This device was
+    unpaired" screen says "Call ended: you were signed out." with no Try
+    again.
+14. **Try again.** Set Hang up after silence to 1 minute and stay silent:
+    the bar reads "Call ended after a long silence." with only the dismiss
+    cross; dismiss it and the phone icon starts the next call. Only a drop
+    ("Call dropped.", or the 20-second audio drop above) and a start that
+    failed offer Try again, as on the desktop.
+
+Simulator: `-live-call-preview` (with `-store-preview -threads-preview`)
+drives the bar offline with no microphone — that is what `LiveCallUITests`
+does. `-live-call-fake-media` keeps the real paired computer but fakes the
+audio, for a fixture harness with `server/testing/fake-openai-live.ts`.
+Without it, the Simulator's real WebRTC gets as far as "Connecting…" against
+that fake (its answer is accepted, but nothing carries the media), and 20
+seconds later the phone drops the call ("Call dropped: the audio could not
+connect."). `-live-call-preview-no-audio` shows the same drop offline.
+
+---
+
 ## What is expected not to work
 
 Not built yet, so not bugs:
@@ -290,8 +380,8 @@ Not built yet, so not bugs:
 - **Nothing arrives after the app is terminated.** Live and replayed notification
   frames now become native alerts and badges, but closed-app push still needs an
   APNs relay with project-owned Apple credentials.
-- **No call mode, spoken replies, or routine management.** Composer dictation,
-  tasks, SQLite transcript search/export,
+- **No spoken replies outside a Live call, and no routine management.** Composer
+  dictation, Live calls (Stage 6), tasks, SQLite transcript search/export,
   reactions, message copying, and edit/version switching are available from
   the conversation UI.
 

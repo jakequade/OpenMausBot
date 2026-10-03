@@ -121,8 +121,7 @@ function readyInspect(overrides: Record<string, unknown> = {}) {
       },
       State: { Running: true },
       Image: "sha256:managed-image-id",
-      // the full hardened HostConfig the stricter shared check now demands:
-      // unprivileged, private IPC/cgroup namespaces, pinned shm, no devices
+      // Unprivileged, private IPC/cgroup namespaces, no devices.
       HostConfig: {
         Memory: 4 * 1024 * 1024 * 1024,
         MemorySwap: 4 * 1024 * 1024 * 1024,
@@ -285,12 +284,27 @@ describe("containerComputerStatus", () => {
     )).toBe(false);
   });
 
-  it.each(["no", "unless-stopped"] as const)("does not extend Docker/VPS capabilities with restart policy %s", (restartPolicy) => {
+  it.each(["no", "always", "on-failure", "unless-stopped"])("does not extend Docker/VPS capabilities with restart policy %s", (restartPolicy) => {
     const config = JSON.parse(readyInspect())[0].HostConfig;
     config.RestartPolicy.Name = restartPolicy;
-    expect(dockerSecurityIsHardened(config, { restartPolicy })).toBe(true);
+    expect(dockerSecurityIsHardened(config, { restartPolicy: "any" })).toBe(true);
     config.CapAdd.push("CAP_SYS_CHROOT");
-    expect(dockerSecurityIsHardened(config, { restartPolicy })).toBe(false);
+    expect(dockerSecurityIsHardened(config, { restartPolicy: "any" })).toBe(false);
+  });
+
+  it.each([
+    { Memory: 1024 ** 3, MemorySwap: 2 * 1024 ** 3, NanoCpus: 4_000_000_000, PidsLimit: 1024, ShmSize: 1024 ** 3, OomKillDisable: true },
+    { Memory: 0, MemorySwap: -1, NanoCpus: 0, PidsLimit: -1, ShmSize: 64 * 1024 ** 2, OomKillDisable: null },
+  ])("accepts operator-selected resources in the shared isolation check: %j", (resources) => {
+    const config = { ...JSON.parse(readyInspect())[0].HostConfig, ...resources };
+    expect(dockerSecurityIsHardened(config)).toBe(true);
+    expect(podmanSecurityIsHardened(config, ["CAP_SETGID", "CAP_SETUID", "CAP_SYS_CHROOT"], ["CAP_SETGID", "CAP_SETUID", "CAP_SYS_CHROOT"])).toBe(true);
+  });
+
+  it.each(["always", "on-failure", "unless-stopped"])("keeps Local VM lifecycle under app control with restart policy %s", (restartPolicy) => {
+    const config = JSON.parse(readyInspect())[0].HostConfig;
+    config.RestartPolicy.Name = restartPolicy;
+    expect(dockerSecurityIsHardened(config)).toBe(false);
   });
 
   it("keeps per-bot identities, workspaces, and ephemeral viewer ports separate", async () => {
@@ -444,6 +458,7 @@ describe("containerComputerStatus", () => {
       { CgroupnsMode: "host" },
       { SecurityOpt: ["seccomp=unconfined"] },
       { DeviceRequests: [{ Driver: "nvidia" }] },
+      { AutoRemove: true },
       { RestartPolicy: { Name: "always", MaximumRetryCount: 0 } },
     ]) {
       const fake = runner({

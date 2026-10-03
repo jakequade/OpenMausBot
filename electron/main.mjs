@@ -80,10 +80,10 @@ import { buildApplicationMenu } from "./menu.mjs";
 import { createComputerSharing, validateSharedFolders } from "./computer-sharing.mjs";
 import { acquireDataDirLease } from "./data-dir-lease.mjs";
 import { createManagedDesktopClient, createManagedDesktopRelay, createManagedDesktopStore } from "./managed-desktop.mjs";
-import { createCloudAccountClient, createCloudAccountStore } from "./cloud-account.mjs";
-import { cloudHomeConnectUrl, withCloudHome } from "./cloud-home.mjs";
+import { cloudPlanSnapshot, createCloudAccountClient, createCloudAccountStore } from "./cloud-account.mjs";
+import { cloudHomeConnectUrl, cloudPlanDisk, isCloudHomeEntry, rememberedCloudHome, withCloudHome } from "./cloud-home.mjs";
 import { createCloudEntry } from "./cloud-entry.mjs";
-import { cloudPageSenderAllowed, createCloudMove, parseCloudMoveStatus } from "./cloud-move.mjs";
+import { cloudPageSenderAllowed, createCloudMove, moveFit, parseCloudMoveStatus } from "./cloud-move.mjs";
 import { createOrgLibrary } from "./org-library.mjs";
 import { createCompanyBackups } from "./company-backups.mjs";
 import { createCompanyBackupSchedule } from "./company-backup-schedule.mjs";
@@ -1009,6 +1009,7 @@ function ensureCloudAccount() {
     openBrowser: url => shell.openExternal(url),
     onState: state => {
       rememberCloudHome(state);
+      rememberedHome = rememberedCloudHome(rememberedHome, state);
       // Signing out, another account or another machine ends lending at once;
       // a renewed sign-in resumes it (computer-sharing.mjs cloudLendingVerdict).
       computerSharing?.cloudChanged();
@@ -1879,8 +1880,23 @@ function navigateMainWindow(url) {
   void mainWindow.loadURL(url).catch(() => {});
 }
 
-function switchEnvironment(id) {
+/** The person's Cloud address for their account, kept while a check with
+ * OMB Cloud is pending or failed (cloud-home.mjs rememberedCloudHome). */
+let rememberedHome = null;
+
+async function switchEnvironment(id) {
   if (id === environmentsState.activeId || (id !== LOCAL_ID && !environmentsState.environments.some((entry) => entry.id === id))) return;
+  const entry = environmentsState.environments.find((candidate) => candidate.id === id);
+  // "My Cloud" opens through the Cloud's own connection: never a page that
+  // asks for a pairing code the person has no server to read from.
+  if (entry && cloudAccount && isCloudHomeEntry(entry, { homeOrigin: cloudAccount.homeTarget()?.origin, remembered: rememberedHome })) {
+    try { await connectCloudHome(); return; } catch (error) {
+      slog(`cloud home: could not connect from the Server menu (${error?.message ?? error})`);
+      // Signed in there already, it opens as any server does. Otherwise
+      // Settings → OMB Cloud says the one next step (sign in again, or wait).
+      if (!(await cloudHomeSignedIn(entry.origin))) { await openLendingSettings(); return; }
+    }
+  }
   persistEnvironments(withActive(environmentsState, id));
   navigateMainWindow(activeOrigin());
 }
@@ -2027,8 +2043,10 @@ function rememberCloudHome(state) {
  * Already signed in there, it simply switches. Otherwise the Admin opens a
  * single-use pairing window on the machine, and the machine's pairing page
  * signs this app in (the same link flow as Connect to a server). The person
- * chose this in Settings, so there is no second confirmation. */
-async function connectCloudHome() {
+ * chose this in Settings, so there is no second confirmation. `open`
+ * "phone" is "Use your Cloud on your phone": it lands on the Cloud's own
+ * phone pairing (cloud-home.mjs cloudHomeConnectUrl). */
+async function connectCloudHome(open = null) {
   const client = ensureCloudAccount();
   const target = client.homeTarget();
   if (!target) throw new Error("Your Cloud is not ready to connect yet.");
@@ -2038,7 +2056,7 @@ async function connectCloudHome() {
   if (!entry) throw new Error("Your Cloud could not be added to Servers.");
   next = withActive(next, entry.id);
   persistEnvironments(next);
-  navigateMainWindow(cloudHomeConnectUrl({ origin: target.origin, grant }, Date.now()));
+  navigateMainWindow(cloudHomeConnectUrl({ origin: target.origin, grant }, Date.now(), open));
   return client.state();
 }
 
@@ -2741,12 +2759,15 @@ const workspaceOnly = (handler) => (event, ...args) => {
 const localWorkspaceOnly = (channel, handler) => localOnly(channel, workspaceOnly(handler));
 // Personal Cloud authority stays in main. No renderer-supplied address, token,
 // paid flag or callback can choose an account or activate Pro.
-for (const method of ["state", "begin", "reopen", "cancel", "refresh", "signOut", "openDashboard"]) {
+for (const method of ["state", "begin", "signInAgain", "reopen", "cancel", "refresh", "signOut", "openDashboard"]) {
   ipcMain.handle(`cloud-account:${method}`, localWorkspaceOnly(`cloud-account:${method}`, () => ensureCloudAccount()[method]()));
 }
 // The machine and its code come from the verified session in main, never
 // from the renderer: this handler takes no arguments.
 ipcMain.handle("cloud-account:connectHome", localWorkspaceOnly("cloud-account:connectHome", () => connectCloudHome()));
+// The same, landing on the Cloud's phone pairing. The page names nothing:
+// "phone" is fixed here, and the Cloud still waits for a click to make a code.
+ipcMain.handle("cloud-account:connectHomeForPhone", localWorkspaceOnly("cloud-account:connectHomeForPhone", () => connectCloudHome("phone")));
 ipcMain.handle("organization:settings-opened", localWorkspaceOnly("organization:settings-opened", () => organizationEntry.settingsOpened()));
 ipcMain.handle("organization:state", localWorkspaceOnly("organization:state", () => ensureManagedDesktop().state()));
 ipcMain.handle("organization:begin", localWorkspaceOnly("organization:begin", (_event, input) => ensureManagedDesktop().begin(input)));
@@ -2824,6 +2845,9 @@ function ensureCloudMove() {
         headers: { ...Object.fromEntries(new Headers(init.headers)), [DESKTOP_MUTATION_HEADER]: desktopMutationToken } });
     },
     pairHome: () => ensureCloudAccount().pairHome(),
+    // A plan whose disk grows is measured at its largest disk, and grown for the move.
+    cloudDisk: () => cloudPlanDisk(ensureCloudAccount().state()),
+    growCloud: sizeGb => ensureCloudAccount().growDisk(sizeGb),
     tempRoot: path.join(app.getPath("temp"), "openmaus-cloud-move"),
     availableBytes: async directory => { const disk = await fs.promises.statfs(directory); return disk.bavail * disk.bsize; },
     onState: publishCloudMoveState,
@@ -2848,7 +2872,8 @@ async function peekCloudMove(origin) {
     const response = await session.defaultSession.fetch(`${origin}/api/cloud-move`, { credentials: "include", cache: "no-store", redirect: "error", signal: AbortSignal.timeout(5_000) });
     if (!response.ok) { await response.body?.cancel().catch(() => {}); return null; }
     const status = parseCloudMoveStatus(await response.json());
-    return status && { contents: status.contents, empty: status.empty, freeBytes: status.freeBytes, previous: status.previous, heldBytes: status.heldBytes };
+    return status && { contents: status.contents, empty: status.empty, freeBytes: status.freeBytes, previous: status.previous, heldBytes: status.heldBytes,
+      uploadReceived: status.uploadReceived, volumeBytes: status.volumeBytes };
   } catch { return null; }
 }
 
@@ -2865,19 +2890,26 @@ function dismissCloudMove() {
 }
 
 async function cloudMoveOverview(onCloudPage) {
-  const move = ensureCloudMove(), target = ensureCloudAccount().homeTarget();
+  const move = ensureCloudMove(), account = ensureCloudAccount(), target = account.homeTarget();
   const [local, cloud] = await Promise.all([move.estimate().catch(() => null), target ? peekCloudMove(target.origin) : null]);
-  // The card on an empty Cloud, once: only when this computer has work to bring.
+  // Measured as the move will be: at the plan's largest disk only when the
+  // Admin says the disk grows (machine.disk); otherwise today's free space.
+  const fit = local && cloud ? moveFit({ localBytes: local.bytes, freeBytes: cloud.freeBytes, uploadReceived: cloud.uploadReceived, volumeBytes: cloud.volumeBytes, disk: cloudPlanDisk(account.state()) }) : null;
+  // The card on an empty Cloud, once: only when this computer has work to bring, and it can fit.
   const hasWork = Boolean(local && (local.bots > 1 || local.rooms > 0 || local.chats > 0));
-  const suggest = Boolean(onCloudPage && target && cloud?.empty && hasWork && move.state().phase === "idle" && !cloudMoveDismissed(target.origin));
-  return { ...move.state(), local, cloud, suggest };
+  const suggest = Boolean(onCloudPage && target && cloud?.empty && hasWork && fit?.fit !== "never" && move.state().phase === "idle" && !cloudMoveDismissed(target.origin));
+  return { ...move.state(), local, cloud, fit, suggest };
 }
 
 /** Local Settings, and (for the card) the verified Cloud page in the main window. */
-const cloudMoveSender = (channel, handler, { cloudPage = false } = {}) => (event) => {
+const cloudMoveSender = (channel, handler, { cloudPage = false, remembered = false } = {}) => (event) => {
   const contents = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
   if (senderIsLocal(event) && workspaceSenderAllowed(event, contents, environmentsState, rendererOrigin())) return handler(false);
-  if (cloudPage && !desktopRemoteAccess && cloudPageSenderAllowed(event, { contents, homeOrigin: cloudAccount?.homeTarget()?.origin, activeOrigin: activeEnvironment(environmentsState)?.origin })) return handler(true);
+  // `remembered`: also the Cloud this account last verified, so its Settings
+  // says "checking" or "sign in again on your computer" while the sign-in is
+  // being checked or has ended, never an error.
+  const last = remembered && rememberedHome?.accountId && rememberedHome.accountId === cloudAccount?.state()?.account?.id ? rememberedHome.origin : undefined;
+  if (cloudPage && !desktopRemoteAccess && cloudPageSenderAllowed(event, { contents, homeOrigin: cloudAccount?.homeTarget()?.origin ?? last, activeOrigin: activeEnvironment(environmentsState)?.origin })) return handler(true);
   throw new Error(`${channel} is only available in this app's window`);
 };
 // Finished: show the Cloud, with what was moved, in this window.
@@ -2893,6 +2925,11 @@ ipcMain.handle("cloud-move:restore-previous", cloudMoveSender("cloud-move:restor
 // The Cloud's setup checklist: "Let your Cloud use this Mac" shows the lending
 // switch, as the menu-bar item's Lending settings… does. Nothing is lent here.
 ipcMain.handle("cloud-lending:open", cloudMoveSender("cloud-lending:open", () => openLendingSettings(), { cloudPage: true }));
+// Settings on the person's own Cloud: the plan, read only (no account or
+// credential), Manage in the browser, and back to this computer.
+ipcMain.handle("cloud-plan:state", cloudMoveSender("cloud-plan:state", () => cloudPlanSnapshot(cloudAccount?.state()), { cloudPage: true, remembered: true }));
+ipcMain.handle("cloud-plan:manage", cloudMoveSender("cloud-plan:manage", async () => { await ensureCloudAccount().openDashboard(); }, { cloudPage: true, remembered: true }));
+ipcMain.handle("cloud-plan:local", cloudMoveSender("cloud-plan:local", () => workspaceMenuAction(() => switchEnvironment(LOCAL_ID)), { cloudPage: true, remembered: true }));
 // ── end Move to Cloud ──
 
 const savedWorkspace = id => {
@@ -3039,6 +3076,7 @@ const CREDENTIAL_PATCH = {
   jevApiKey: (value) => ({ decider: { key: value } }),
   openaiImageApiKey: (value) => ({ imageGen: { key: value } }),
   customImageApiKey: (value) => ({ imageGen: { customApiKey: value } }),
+  openaiLiveKey: (value) => ({ live: { key: value } }),
 };
 
 async function saveWorkspaceCredential(name, value) {

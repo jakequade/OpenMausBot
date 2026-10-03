@@ -65,6 +65,7 @@
         {
           "id": "preview-gmail-user",
           "role": "user",
+          "via": "call",
           "kind": "text",
           "at": 1789088400000,
           "text": "Help me triage Gmail while keeping iCloud in a separate thread."

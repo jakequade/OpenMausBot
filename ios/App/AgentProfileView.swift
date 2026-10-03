@@ -1,4 +1,3 @@
-import AVFAudio
 import CompanionCore
 import PhotosUI
 import SwiftUI
@@ -36,7 +35,8 @@ struct AgentProfileView: View {
     @State private var selectedEffort: String?
     @State private var savedModel: ModelSelection
     @State private var busy = false
-    @State private var player: AVAudioPlayer?
+    @StateObject private var player = VoiceNotePlayer()
+    @State private var previewTask: Task<Void, Never>?
     @State private var baseline: ProfileFormSnapshot
 
     init(bot: Bot) {
@@ -314,7 +314,7 @@ struct AgentProfileView: View {
                         Toggle("Speak replies", isOn: $speakReplies)
                             .disabled(!selectedVoiceCanSpeak)
                         Button("Preview voice", systemImage: "speaker.wave.2") {
-                            Task { await previewVoice() }
+                            previewTask = Task { await previewVoice() }
                         }
                         .disabled(busy || !selectedVoiceCanSpeak)
 
@@ -401,6 +401,14 @@ struct AgentProfileView: View {
             }
             .onValueChange(of: engine) { selected in
                 Task { await switchEngine(to: selected) }
+            }
+            .onValueChange(of: player.isPlaying) { playing in
+                if !playing { VoiceNoteCenter.shared.release(player) }
+            }
+            .onDisappear {
+                previewTask?.cancel()
+                player.pause()
+                VoiceNoteCenter.shared.release(player)
             }
         }
     }
@@ -604,25 +612,34 @@ struct AgentProfileView: View {
             session.actionError = "Pick an agent voice or configure a workspace default on your computer first."
             return
         }
+        // The preview reconfigures and later deactivates the shared audio
+        // session, which would cut a Live call's audio. Same arbiter as
+        // voice notes: refused while an input owner holds the session.
+        guard VoiceNoteCenter.shared.playbackAllowed else {
+            session.actionError = String(localized: "Voice previews are paused during a Live call.")
+            return
+        }
         busy = true
         defer { busy = false }
-        guard let data = await session.previewVoice(voice, for: current) else { return }
+        guard let data = await session.previewVoice(voice, for: current), !Task.isCancelled else { return }
+        // A call may have taken ownership while the generated clip loaded.
+        guard VoiceNoteCenter.shared.playbackAllowed else {
+            session.actionError = String(localized: "Voice previews are paused during a Live call.")
+            return
+        }
         do {
-            let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playback, mode: .spokenAudio)
-            try audioSession.setActive(true)
-
-            let nextPlayer = try AVAudioPlayer(data: data)
-            guard nextPlayer.prepareToPlay(), nextPlayer.play() else {
-                try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
-                player = nil
+            player.reset()
+            try player.load(data)
+            VoiceNoteCenter.shared.claim(player)
+            player.play(mode: .spokenAudio)
+            guard player.isPlaying else {
+                VoiceNoteCenter.shared.release(player)
                 session.actionError = "The generated audio could not be played."
                 return
             }
-            player = nextPlayer
         } catch {
-            player = nil
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            player.reset()
+            VoiceNoteCenter.shared.release(player)
             session.actionError = "The generated audio could not be played."
         }
     }

@@ -23,6 +23,7 @@ struct ChatView: View {
     let chat: Chat
     @State private var selectedThreadId: String
     @EnvironmentObject private var session: Session
+    @EnvironmentObject private var liveCall: LiveCallController
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
@@ -55,6 +56,8 @@ struct ChatView: View {
     @State private var fileDownloadTask: Task<Void, Never>?
     @State private var fileDownloadRequestID: UUID?
     @State private var threadOpenTask: Task<Void, Never>?
+    /// The bot whose Live call waits on the first-call disclosure.
+    @State private var disclosingLiveCall: Bot?
     @FocusState private var composerFocused: Bool
     @StateObject private var dictation = SpeechDictation()
     /// The opening beat: the island grows with the bot's face in it, then
@@ -363,6 +366,7 @@ struct ChatView: View {
             .id(threadId)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
+            liveCallBars
             composer
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
@@ -494,12 +498,73 @@ struct ChatView: View {
                 filePreview = nil
             }
         }
+        // A phone has no Live switch: its first call is where Live is turned
+        // on, so that call says first what a call sends to OpenAI (the
+        // settings sheet's sentence). Start call remembers it on this phone;
+        // Cancel starts nothing and leaves it for the next try.
+        .alert(
+            Text("A Live call sends your voice to OpenAI, along with the chat's recent messages, the bot's answers and the details of any approval it asks for. The OpenAI key stays on your computer."),
+            isPresented: Binding(
+                get: { disclosingLiveCall != nil },
+                set: { if !$0 { disclosingLiveCall = nil } }
+            ),
+            presenting: disclosingLiveCall
+        ) { bot in
+            Button("Cancel", role: .cancel) {}
+            Button("Start call") {
+                LiveCallDisclosure().accept()
+                startLiveCall(bot)
+            }
+        }
+    }
+
+    // MARK: - Live call
+
+    /// Dictation lets go of the microphone first: the call takes it.
+    private func startLiveCall(_ bot: Bot) {
+        dictation.stop()
+        liveCall.start(bot: bot)
+    }
+
+    /// This phone's call on this chat, a call here from another device, or
+    /// a banner back to this phone's call on some other chat. The bar and
+    /// the controller live in LiveCallBar.swift / LiveCallController.swift;
+    /// this is only the slot.
+    ///
+    /// The banner shows in every chat, rooms included: a call is going on
+    /// whichever chat is open. Its tap switches thread when the call is on
+    /// this bot, and otherwise goes back to the roster, whose own banner
+    /// opens the call's chat. The bars are for bot chats only, as calls are.
+    @ViewBuilder private var liveCallBars: some View {
+        if case let .bot(bot) = current, liveCall.concerns(threadId: threadId) {
+            LiveCallBar(botName: bot.name)
+        } else if liveCall.machine.isActive {
+            LiveCallBanner { target in
+                if case let .bot(bot) = current, target.botId == bot.id {
+                    selectedThreadId = target.threadId
+                } else {
+                    dismiss()
+                }
+            }
+        } else if case let .bot(bot) = current,
+                  let remote = liveCall.machine.remoteCall(session.state.liveCall, onThread: threadId) {
+            RemoteLiveCallBar(call: remote, botName: bot.name)
+        }
+    }
+
+    /// The phone icon starts a Live call. Hidden while this phone is on one,
+    /// while this chat's bar says why its call stopped, and while another
+    /// device holds the line. A call that stopped on some other chat does
+    /// not hide it: that notice is only visible there.
+    private var canStartLiveCall: Bool {
+        liveCall.machine.allowsStart(onThread: threadId) && session.state.liveCall?.isRunning != true
     }
 
     // MARK: - Header
 
-    /// Back on the left with the rest-of-app unread count, threads and the
-    /// bot's computer on the right — a blurred strip to the top edge.
+    /// Back on the left with the rest-of-app unread count, then the Live
+    /// call button; threads and the bot's computer on the right — a blurred
+    /// strip to the top edge.
     private var headerBar: some View {
         HStack(alignment: .top) {
             Button { dismiss() } label: {
@@ -525,6 +590,23 @@ struct ChatView: View {
             .buttonStyle(.plain)
             .glassCapsule()
             .accessibilityLabel("Back")
+
+            // Beside Back rather than the computer: the bot's face sits in
+            // the middle of this strip, and one more round button on the
+            // right pushes the Threads pill under it. Here, hiding it during
+            // a call moves nothing else.
+            if case let .bot(bot) = current, canStartLiveCall {
+                GlassButton(systemImage: "phone", size: 44, weight: .medium) {
+                    Haptics.selection()
+                    if LiveCallDisclosure().isDue {
+                        disclosingLiveCall = bot
+                    } else {
+                        startLiveCall(bot)
+                    }
+                }
+                .accessibilityLabel("Start a Live call with \(current.name)")
+                .accessibilityIdentifier("live-call-start")
+            }
 
             Spacer(minLength: 4)
 
@@ -1317,7 +1399,7 @@ struct ChatView: View {
                                 .pulseCompat(isActive: dictation.isListening)
                         }
                         .buttonStyle(.plain)
-                        .disabled(preparingAttachments || sendingMessage)
+                        .disabled(preparingAttachments || sendingMessage || liveCall.machine.isActive)
                         .padding(.bottom, 6)
                         .accessibilityLabel(dictation.isListening ? "Stop dictation" : "Start dictation")
 
@@ -1390,6 +1472,15 @@ struct MessageRow: View {
     var body: some View {
         VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 6) {
             content
+
+            if message.isViaCall {
+                // spoken on a Live call and transcribed; the label says why
+                // the wording may read a little off
+                Label("via call", systemImage: "phone")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.secondary)
+                    .accessibilityIdentifier("via-call-\(message.id)")
+            }
 
             if let comm = message.comm {
                 // the chip already says what happened ("Posted in Standup");

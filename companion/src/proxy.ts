@@ -210,13 +210,12 @@ const endpointSnapshot = (options: ProxyOptions): CompanionEndpointSnapshot => {
   };
 };
 
-/** Headers worth carrying to the harness. An allowlist rather than a
- * blocklist: `host` and `origin` must not travel (see above), `authorization`
- * is the sidecar's credential and means nothing to the harness, and hop-by-hop
- * headers are by definition not ours to relay. */
-const forwardHeaders = (req: IncomingMessage, authenticatedDeviceId?: string, mutationToken?: string): Record<string, string> => {
+/** Who is asking, as the harness hears it from this sidecar: the companion
+ * marker, and for an authenticated phone its registry id and the private
+ * relay token. Shared by the proxy and the companion's own notices
+ * (harness-notice.ts), so both speak to the harness the same way. */
+export function companionIdentityHeaders(authenticatedDeviceId?: string, mutationToken?: string): Record<string, string> {
   const out: Record<string, string> = {
-    accept: String(req.headers.accept ?? "*/*"),
     // Lets a response whose URL is intentionally loopback-only (the VPS SSH
     // viewer) fail before opening a tunnel a phone cannot reach. This header
     // carries no authority; it only narrows behavior at the harness.
@@ -224,11 +223,24 @@ const forwardHeaders = (req: IncomingMessage, authenticatedDeviceId?: string, mu
   };
   // Never forward a caller-supplied device header. This value comes only
   // from the registry entry which authenticated the bearer above, allowing
-  // the harness to bind an encrypted credential to the same paired phone.
+  // the harness to bind an encrypted credential (and a Live call) to the
+  // same paired phone.
   if (authenticatedDeviceId && /^[\w-]{1,128}$/.test(authenticatedDeviceId)) {
     out["x-openmausbot-companion-device"] = authenticatedDeviceId;
     if (mutationToken) out["x-openmausbot-companion-auth"] = mutationToken;
   }
+  return out;
+}
+
+/** Headers worth carrying to the harness. An allowlist rather than a
+ * blocklist: `host` and `origin` must not travel (see above), `authorization`
+ * is the sidecar's credential and means nothing to the harness, and hop-by-hop
+ * headers are by definition not ours to relay. */
+const forwardHeaders = (req: IncomingMessage, authenticatedDeviceId?: string, mutationToken?: string): Record<string, string> => {
+  const out: Record<string, string> = {
+    accept: String(req.headers.accept ?? "*/*"),
+    ...companionIdentityHeaders(authenticatedDeviceId, mutationToken),
+  };
   const contentType = req.headers["content-type"];
   if (contentType) out["content-type"] = String(contentType);
   // Preserve a trustworthy byte count for bounded raw uploads. Without it,

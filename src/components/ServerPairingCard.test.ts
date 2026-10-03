@@ -41,6 +41,12 @@ describe("pairing devices from a hosted server's settings", () => {
     const admin = renderToStaticMarkup(createElement(ServerPairingCard, { initialSession: { ...chatOnly, scopes: ["admin", "client"] } }));
     expect(admin).toContain("Create pairing code");
     expect(admin).not.toContain("data-server-pairing-chat-only");
+    // Connect your phone lands focus on the one button that shows the code
+    expect(admin).toMatch(/<button[^>]*data-phone-pairing-action[^>]*>Create pairing code<\/button>/);
+    expect(admin.match(/data-phone-pairing-action/g)?.length).toBe(1);
+    expect(admin).toContain('data-phone-pairing="server"');
+    expect(html).toContain('data-phone-pairing="server"');
+    expect(html).not.toContain("data-phone-pairing-action");
   });
 
   it("offers no pairing code on a hosted workspace, where people sign in through the portal", () => {
@@ -51,6 +57,8 @@ describe("pairing devices from a hosted server's settings", () => {
     expect(html).not.toContain("Create pairing code");
     expect(html).not.toMatch(/pairing code from|openmausbot pair/);
     expect(html).toContain("Signed-in devices");
+    // no code to show here: focus goes to the card, never to a device's Sign out
+    expect(html).not.toContain("data-phone-pairing-action");
     const member = renderToStaticMarkup(createElement(ServerPairingCard, { initialSession: { ...admin, scopes: ["client"] }, initialPairingCodes: false }));
     expect(member).toContain("data-server-pairing-chat-only");
     expect(member).not.toContain("openmausbot pair");

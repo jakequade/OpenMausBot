@@ -642,6 +642,117 @@ final class StoreTests: XCTestCase {
         state.apply(.unknown(kind: "routine.run"))
         XCTAssertEqual(state.bots.count, before)
     }
+
+    // MARK: - Live calls
+
+    private func liveCall(_ status: LiveCallState.Status) -> LiveCallState {
+        LiveCallState(callId: "c1", botId: "b1", threadId: "t1", client: "desktop", voice: "marin", startedAt: 1, status: status)
+    }
+
+    func testALiveCallFrameReplacesTheCallAndNullClearsIt() throws {
+        var state = try hydrated()
+        XCTAssertNil(state.liveCall)
+        state.apply(.liveCall(botId: "b1", threadId: "t1", call: liveCall(.connecting)))
+        XCTAssertEqual(state.liveCall?.status, .connecting)
+        state.apply(.liveCall(botId: "b1", threadId: "t1", call: liveCall(.live)))
+        XCTAssertEqual(state.liveCall?.status, .live)
+        state.apply(.liveCall(botId: "b1", threadId: "t1", call: liveCall(.ended)))
+        XCTAssertEqual(state.liveCall?.status, .ended, "the ended state stays until the harness clears it: the bar reads the reason from it")
+        state.apply(.liveCall(botId: "b1", threadId: "t1", call: nil))
+        XCTAssertNil(state.liveCall)
+    }
+
+    func testTheMacsAnswerToAHangUpReplacesTheCallAtOnce() throws {
+        var state = try hydrated()
+        state.apply(.liveCall(botId: "b1", threadId: "t1", call: liveCall(.live)))
+        var ended = liveCall(.ended)
+        ended.endReason = "hung-up"
+        XCTAssertFalse(state.applyLiveCallEnd(callId: "c1", answer: ended))
+        XCTAssertEqual(state.liveCall, ended, "the remote bar goes without waiting for the frame")
+    }
+
+    func testAnOlderAnswerToAHangUpDoesNotUndoLaterFrames() throws {
+        var state = try hydrated()
+        var ended = liveCall(.ended)
+        ended.endReason = "hung-up"
+
+        // the frame already cleared the line
+        XCTAssertFalse(state.applyLiveCallEnd(callId: "c1", answer: ended))
+        XCTAssertNil(state.liveCall)
+
+        // the frame already said ended, with the Mac's own reason
+        var idle = liveCall(.ended)
+        idle.endReason = "idle"
+        state.apply(.liveCall(botId: "b1", threadId: "t1", call: idle))
+        XCTAssertFalse(state.applyLiveCallEnd(callId: "c1", answer: ended))
+        XCTAssertEqual(state.liveCall, idle)
+
+        // a newer call is on the line now
+        var newer = liveCall(.live)
+        newer.callId = "c2"
+        state.apply(.liveCall(botId: "b1", threadId: "t1", call: newer))
+        XCTAssertFalse(state.applyLiveCallEnd(callId: "c1", answer: ended))
+        XCTAssertEqual(state.liveCall, newer)
+    }
+
+    func testAHangUpTheMacNoLongerKnowsAsksForTheLine() throws {
+        // 404: the Mac runs no such call, yet it reads as running here — a
+        // frame was missed. Not a guess at the line: Session asks for it.
+        var state = try hydrated()
+        state.apply(.liveCall(botId: "b1", threadId: "t1", call: liveCall(.live)))
+        XCTAssertTrue(state.applyLiveCallEnd(callId: "c1", answer: nil))
+        XCTAssertEqual(state.liveCall, liveCall(.live), "left for the lookup to replace")
+
+        state.apply(.liveCall(botId: "b1", threadId: "t1", call: nil))
+        XCTAssertFalse(state.applyLiveCallEnd(callId: "c1", answer: nil), "nothing stale to look up")
+    }
+
+    func testALookupThatStraddledAFrameIsDropped() throws {
+        // GET /api/live/call goes out with the line empty; a start's frame
+        // lands while it is out; the lookup's older `null` must not end the
+        // call that just began
+        var state = try hydrated()
+        state.resetCursor("abc12345:7")
+        let cursor = state.cursor
+        let line = state.liveCall
+        state.apply(.liveCall(botId: "b1", threadId: "t1", call: liveCall(.connecting)))
+        state.advance(to: 8)
+        XCTAssertFalse(state.applyLiveCallLookup(nil, ifCursorMatches: cursor, lineWas: line))
+        XCTAssertEqual(state.liveCall, liveCall(.connecting))
+    }
+
+    func testALookupThatStraddledAHangUpAnswerIsDropped() throws {
+        // no frame, but the remote bar's hang-up answer changed the line
+        var state = try hydrated()
+        state.resetCursor("abc12345:7")
+        state.apply(.liveCall(botId: "b1", threadId: "t1", call: liveCall(.live)))
+        let cursor = state.cursor
+        let line = state.liveCall
+        var ended = liveCall(.ended)
+        ended.endReason = "hung-up"
+        XCTAssertFalse(state.applyLiveCallEnd(callId: "c1", answer: ended))
+        XCTAssertFalse(state.applyLiveCallLookup(liveCall(.live), ifCursorMatches: cursor, lineWas: line))
+        XCTAssertEqual(state.liveCall, ended)
+    }
+
+    func testALookupWithNothingNewerMeanwhileIsApplied() throws {
+        var state = try hydrated()
+        state.resetCursor("abc12345:7")
+        let cursor = state.cursor
+        XCTAssertTrue(state.applyLiveCallLookup(liveCall(.live), ifCursorMatches: cursor, lineWas: nil))
+        XCTAssertEqual(state.liveCall, liveCall(.live), "a phone that connects mid-call learns about it")
+        XCTAssertTrue(state.applyLiveCallLookup(nil, ifCursorMatches: cursor, lineWas: liveCall(.live)))
+        XCTAssertNil(state.liveCall)
+    }
+
+    func testHydrateKeepsTheCallTheStreamReported() throws {
+        // hydrate replaces the fleet, not the line; Session refreshes the
+        // call separately with GET /api/live/call
+        var state = CompanionState()
+        state.apply(.liveCall(botId: "b1", threadId: "t1", call: liveCall(.live)))
+        state.hydrate(try fleet())
+        XCTAssertEqual(state.liveCall?.callId, "c1")
+    }
 }
 
 // MARK: - Live text

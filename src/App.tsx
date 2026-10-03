@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useAdvancedMode } from "@/lib/interface-mode";
 import { Loader2, Menu } from "lucide-react";
 import { CLOUD_LINK_SETTINGS, StoreProvider, useStore } from "@/state/store";
 import { useWelcomeViewer, WelcomeGate } from "@/components/onboarding/WelcomeGate";
 import { cloudSignInDue, spotlightsQuiet, type WelcomeViewer } from "@/lib/onboarding";
 import { FirstConversationTour } from "@/components/onboarding/FirstConversationTour";
 import { GuidedTour } from "@/components/onboarding/GuidedTour";
+import { LiveCallHost } from "@/components/LiveCallHost";
 import { ThreadRefsProvider } from "@/components/ThreadRefs";
 import { initAnalytics } from "@/lib/analytics";
 import { Sidebar } from "@/components/Sidebar";
@@ -15,6 +17,7 @@ import { SIDEBAR_AND_PANEL_FIT, TWO_SIDE_PANELS_FIT, useMediaQuery } from "@/lib
 import { RemoteAgentSettingsPanel } from "@/components/RemoteAgentSettingsPanel";
 import { NewBotDialog } from "@/components/NewBotDialog";
 import { PluginsPanel, preloadConnectedApps } from "@/components/PluginsPanel";
+import { TriggersPanel } from "@/components/TriggersPanel";
 import { ComputerPanel } from "@/components/ComputerPanel";
 import { RemoteDesktopPanel } from "@/components/remote-desktop-panel";
 import { InspectorPanel } from "@/components/InspectorPanel";
@@ -37,6 +40,7 @@ import { setLocale } from "@/lib/i18n";
 import { shouldOpenKeyboardShortcuts } from "@/lib/keyboard-shortcuts";
 import { effectiveLanguage, useLanguageChoice } from "@/lib/language-preference";
 import { botShowsUnread } from "@/lib/bot-unread";
+import { phonePairingSettingsAction, takePhonePairingRequest } from "@/lib/phone-pairing";
 
 function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   const { state, dispatch } = useStore();
@@ -71,6 +75,15 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
     }
     return window.ogb.environments.onOpenSettings?.(open);
   }, [dispatch]);
+  // "Use your Cloud on your phone" opens the Cloud in this window at
+  // /?desktop-settings=phone: its own phone pairing, in any window, on any
+  // server. It only opens Settings there; no code is made until a click.
+  useEffect(() => {
+    const rest = takePhonePairingRequest(window.location.href);
+    if (rest === null) return;
+    window.history.replaceState(null, "", rest);
+    dispatch(phonePairingSettingsAction());
+  }, [dispatch]);
   // Mobile-only drawer state. Above md, none of these properties are emitted
   // at all — Sidebar scopes every mobile class with max-md: rather than
   // cancelling them with md:, which would still emit a translate value and
@@ -101,6 +114,11 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   const sidePanelOpen = Boolean(bot) && (state.settingsOpen || state.computerOpen || state.inspectorOpen);
   const collapseSidebar = sidePanelOpen && !sidebarAndPanelFit;
   const calendarFocus = state.activeView === "routines";
+  // Turning Advanced mode off closes the inspector it no longer offers.
+  const advanced = useAdvancedMode();
+  useEffect(() => {
+    if (!advanced && state.inspectorOpen) dispatch({ type: "toggleInspector", open: false });
+  }, [advanced, state.inspectorOpen, dispatch]);
 
   // Nothing on this machine can run a bot. A missing cloud login does not
   // count — that CLI can still host a local model. Wait for the first
@@ -217,7 +235,8 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
     state.computerOpen ||
     state.inspectorOpen ||
     state.appSettingsOpen ||
-    state.pluginsOpen;
+    state.pluginsOpen ||
+    state.triggersOpen;
 
   // The macOS app menu's Preferences… item lives in the desktop shell, so the
   // shell signals the request over the bridge (Cmd+, accelerates the item).
@@ -353,6 +372,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
           Cloud's one-time card on an empty Cloud (desktop app only). */}
       <CloudSetup viewer={viewer} />
       {state.pluginsOpen && <PluginsPanel />}
+      {state.triggersOpen && <TriggersPanel />}
       {state.newBotOpen && <NewBotDialog />}
       {state.shortcutsOpen && (
         <KeyboardShortcutsModal
@@ -391,6 +411,7 @@ function Application() {
         </ThreadRefsProvider>
         <WelcomeGate viewer={viewer} />
         <GuidedTour />
+        <LiveCallHost />
         <FirstConversationTour quiet={spotlightsQuiet(viewer)} />
       </StoreProvider>
     </DesktopCapabilitiesProvider>

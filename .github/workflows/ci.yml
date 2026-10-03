@@ -93,10 +93,9 @@ jobs:
         shard: [1, 2, 3, 4]
     runs-on: ${{ matrix.os }}
     # vitest splits by file count, not by duration, so the shard holding the
-    # heavy e2e files ran 13 minutes on macOS/Ubuntu and 19 on Windows with
-    # three shards; four keeps the heaviest near 10 and 15. The cap catches a
-    # hang, not normal growth: raise it with the suite, or add a shard.
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 25 || 20 }}
+    # heavy e2e files exceeds 20 minutes on macOS and 25 on Windows with
+    # tests still progressing. The cap catches a hang, not normal suite growth.
+    timeout-minutes: ${{ matrix.os == 'ubuntu-latest' && 20 || 35 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@ff378ebe6b225b0680b81c1ad4498ae0d1d3a5e3 # v6.0.10

@@ -6,6 +6,7 @@ import { cn } from "@/lib/cn";
 import { useMenuMotion } from "./MenuMotion";
 import { activeLocale, t } from "@/lib/i18n";
 import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
+import { useAdvancedMode } from "@/lib/interface-mode";
 import {
   draftRevision,
   appendDraftAttachments,
@@ -55,6 +56,7 @@ import {
 import { normalizeState } from "@/lib/mascot";
 import { goalCoordinatorForComposer, groupComposerHint, jevRoomRoutingOn, roomRespondersForComposer } from "@/lib/group-routing";
 import { PendingApprovalActions, PendingApprovalPanel, pendingApprovals } from "./PendingApproval";
+import { CallButton } from "./CallView";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { ReplyQuote } from "./ReplyQuote";
 import { useThreadRefs } from "./ThreadRefs";
@@ -121,6 +123,9 @@ export function Composer({
   const ownerOrAdmin = useOwnerOrAdmin();
   const { threads, currentBotId } = useThreadRefs();
   const { capabilities } = useDesktopCapabilities();
+  // Simple leaves where a conversation works to its bot's Works on (Auto by
+  // default); pinning a place per conversation is an Advanced control.
+  const advanced = useAdvancedMode();
   const remoteClient = window.ogb?.remoteClient?.active === true;
   // Unified target: a 1:1 bot thread or a room. In a room the @ picker
   // offers members plus @everyone; explicit mentions override the room's
@@ -1036,7 +1041,7 @@ export function Composer({
                   onManageCommandAllowlist={ownerOrAdmin === true ? () => setCommandAllowlistTarget({ botId: modeBot.id, botName: modeBot.name, threadId: modeBot.threadId }) : undefined}
                 />
               )}
-              {modeBot && !remoteClient && (
+              {modeBot && !remoteClient && advanced && (
                 <PlaceChip
                   bot={modeBot}
                   task={composerTask}
@@ -1191,6 +1196,10 @@ export function Composer({
             <Mic size={18} />
           </button>
         )}
+        {/* Calling the bot lives here, beside dictation, rather than in the
+            chat header: it is another way to talk to it. Rooms keep their
+            group call button in the room header. */}
+        {bot && !group && <CallButton bot={bot} placement="composer" />}
         {hasContent && !locked && (
           <button
             onClick={send}

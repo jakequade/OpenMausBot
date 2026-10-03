@@ -59,9 +59,7 @@ export type LifecycleAction = "pull" | "run" | "start" | "stop" | "remove";
 const INTERNAL_VIEWER_PORT = 6901;
 const HOST_VIEWER_PORT = 6080;
 const MEMORY_BYTES = 4 * 1024 * 1024 * 1024;
-const NANO_CPUS = 2_000_000_000;
 const PIDS_LIMIT = 512;
-const SHM_BYTES = 512 * 1024 * 1024;
 
 export interface LocalVmTarget {
   /** Stable, non-secret identity used for leases and caches. */
@@ -830,17 +828,13 @@ export interface DockerHardeningConfig {
   RestartPolicy?: { Name?: string; MaximumRetryCount?: number };
 }
 
-/** One hardening contract for both managed containers (Local VM here, the
- * BYO-VPS backend in vps-computer.ts): exact resource limits, no privilege,
- * no host namespaces or devices, no disabled security profiles. The only
- * runtime-specific capability exception is Podman's Firefox sandbox chroot.
- * Callers also differ on restart policy — the VPS
- * container must survive a reboot nobody is watching ("unless-stopped"),
- * while Local VM starts remain controlled by OMB's idle policy and turn
- * lifecycle rather than a daemon restart policy. */
+/** Shared isolation contract for Local VM and BYO-VPS containers. Resource
+ * budgets are creation defaults, not an isolation requirement. Podman alone
+ * needs chroot for Firefox's sandbox. Local VM starts stay controlled by
+ * OMB's idle policy; VPS restart policy belongs to the server operator. */
 export function dockerSecurityIsHardened(
   config: DockerHardeningConfig | undefined,
-  options: { restartPolicy?: "no" | "unless-stopped"; podmanBrowserSandbox?: boolean } = {},
+  options: { restartPolicy?: "no" | "unless-stopped" | "any"; podmanBrowserSandbox?: boolean } = {},
 ): boolean {
   if (!config) return false;
   const capDrop = (config.CapDrop ?? []).map((cap) => cap.toLowerCase());
@@ -850,27 +844,21 @@ export function dockerSecurityIsHardened(
   const unsafeSecurityOption = (config.SecurityOpt ?? []).some((option) => /(?:^|=)(?:unconfined|disable)$/i.test(option));
   const restartPolicy = config.RestartPolicy?.Name;
   const restartPolicyOk =
-    options.restartPolicy === "unless-stopped"
+    options.restartPolicy === "any" || (options.restartPolicy === "unless-stopped"
       ? restartPolicy === "unless-stopped"
-      : restartPolicy === undefined || restartPolicy === "" || restartPolicy === "no";
+      : restartPolicy === undefined || restartPolicy === "" || restartPolicy === "no");
   return (
-    config.Memory === MEMORY_BYTES &&
-    (config.MemorySwap ?? 0) === MEMORY_BYTES &&
-    (config.NanoCpus ?? 0) === NANO_CPUS &&
-    config.PidsLimit === PIDS_LIMIT &&
     capDrop.includes("all") &&
     capAdd.join(",") === (options.podmanBrowserSandbox ? "setgid,setuid,sys_chroot" : "setgid,setuid") &&
     config.Privileged === false &&
     !config.PidMode &&
     config.IpcMode === "private" &&
     !config.UTSMode &&
-    config.ShmSize === SHM_BYTES &&
     (!config.Devices || config.Devices.length === 0) &&
     (!config.DeviceRequests || config.DeviceRequests.length === 0) &&
     !unsafeSecurityOption &&
     !config.UsernsMode &&
     config.CgroupnsMode === "private" &&
-    config.OomKillDisable !== true &&
     config.AutoRemove !== true &&
     restartPolicyOk
   );

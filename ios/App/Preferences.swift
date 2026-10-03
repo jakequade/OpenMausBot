@@ -17,6 +17,8 @@ enum PrefKey {
     /// Per device, like the desktop's sidebar density: a phone and a laptop
     /// have different room for a list.
     static let rosterDensity = "companion.prefs.rosterDensity"
+    /// Live calls: speaker (true, the default) or earpiece. A phone-side choice.
+    static let liveSpeaker = "companion.prefs.liveSpeaker"
 }
 
 /// The set of chats whose island intro has already played.

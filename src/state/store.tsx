@@ -13,7 +13,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { BotVisibility, CloudBackend, ConnectorToolGrant, EffortLevel, InstalledPackageMetadata, ServerFrame, GroupThreadUsage, SteerQueueReason } from "../../shared/wire";
+import { flushSync } from "react-dom";
+import type { BotVisibility, CardAnswerer, CloudBackend, ConnectorToolGrant, EffortLevel, InstalledPackageMetadata, LiveCallState, LiveSettings, ServerFrame, GroupThreadUsage, SteerQueueReason } from "../../shared/wire";
 import type { TurnDigest } from "../../shared/digest";
 import type { ToolScope } from "../../shared/tool-scope";
 import type { ModelVariantOption, RuntimeEvent } from "../../shared/runtime-events";
@@ -86,6 +87,8 @@ export interface OptionCardData {
   /** The words an answered question card was answered with — `answered`
    * only holds the behavior once the server settles a live ask. */
   answeredText?: string;
+  /** Who settled the card; `via: "call"` when it was decided by voice on a Live call. */
+  answeredBy?: CardAnswerer;
   dismissed?: boolean;
   /** Present when this card is a live provider ask (approval/question). */
   requestId?: string;
@@ -175,8 +178,9 @@ export interface Message {
   tool?: { name: string; ok?: boolean; spoken?: string; setup?: boolean; claudeUpdate?: boolean; summary?: string; input?: string; output?: string ; itemId?: string; outputPath?: string; fullResult?: boolean };
   /** user messages sent into a running turn — the model saw it mid-turn */
   steered?: boolean;
-  /** a user message that arrived through the server's API, not typed here */
-  via?: "api";
+  /** a user message that did not come from typing here: through the
+   * server's API, or spoken during a Live call. */
+  via?: "api" | "call";
   /** Provider turn that produced this message. */
   turnId?: string;
   /** Last assistant text item from a settled provider turn. */
@@ -313,6 +317,11 @@ export interface Task {
    * composer, or by its first Auto turn to the place it reached. Wins over
    * the bot's Works on (except Off); absent = follows the bot. */
   surface?: "cloud" | "vm" | "local" | "browser";
+  /** true when that pin is the machine's own record (an Auto turn's landing
+   * place or the bot's select_computer choice), which the next Works on
+   * change moves; absent on a person's pin or one older than the server's
+   * record of who set it. Server-derived. */
+  surfaceAuto?: true;
   /** set when a bot (not the person) started this thread — its own or a
    * teammate's; the sidebar shows a quiet "opened by <name>" under the title */
   openedBy?: ThreadOpener;
@@ -522,7 +531,8 @@ function taskPatchFields(patch: TaskUpdatePatch): Partial<Task> {
     ...(projectId === undefined ? {} : { projectId: projectId ?? undefined }),
     ...(archivedAt === undefined ? {} : { archivedAt: archivedAt ?? undefined }),
     ...(snoozedUntil === undefined ? {} : { snoozedUntil: snoozedUntil ?? undefined }),
-    ...(surface === undefined ? {} : { surface: surface ?? undefined }),
+    // A person's pin or unpin is never the machine's record.
+    ...(surface === undefined ? {} : { surface: surface ?? undefined, surfaceAuto: undefined }),
     ...(pinned === undefined ? {} : { pinned: pinned ? true : undefined }) };
 }
 
@@ -657,6 +667,8 @@ export interface ConfigStatus {
     enabled: boolean;
     jobs: { roomRouting: boolean };
   };
+  /** Live calls (OpenAI GPT-Live): configured-or-not, never the key. */
+  live?: LiveSettings;
   /** Shared write-only credential for on-demand GPT Image avatars. */
   imageGen?: {
     configured: boolean;
@@ -723,7 +735,7 @@ export interface BrowserProfile {
 // Settings shows (a saved key's Test button used to vanish that way).
 export type ConfigStatusFrame = Pick<
   ConfigStatus,
-  "xai" | "mistral" | "cerebras" | "anthropic" | "openai" | "openrouter" | "openaiCompat" | "fleet" | "composio" | "box" | "vps" | "rooms" | "threads" | "automaticRecovery" | "localVm" | "opencodeGo" | "tts" | "decider" | "imageGen" | "profile" | "language" | "features" | "onboarding" | "browserEngine" | "browserProfiles" | "edition" | "budgets" | "billing" | "managedPolicy" | "cloudHome"
+  "xai" | "mistral" | "cerebras" | "anthropic" | "openai" | "openrouter" | "openaiCompat" | "fleet" | "composio" | "box" | "vps" | "rooms" | "threads" | "automaticRecovery" | "localVm" | "opencodeGo" | "tts" | "decider" | "imageGen" | "live" | "profile" | "language" | "features" | "onboarding" | "browserEngine" | "browserProfiles" | "edition" | "budgets" | "billing" | "managedPolicy" | "cloudHome"
 >;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
@@ -747,6 +759,7 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     tts: frame.tts,
     decider: frame.decider,
     imageGen: frame.imageGen,
+    live: frame.live,
     profile: frame.profile,
     language: frame.language,
     features: frame.features,
@@ -903,6 +916,16 @@ export interface AppState {
   /** Session discoveries stay with their conversation and never enter persisted settings. */
   modelVariantSessions: Record<string, ModelVariantSession>;
   config: ConfigStatus | null;
+  /** The Live call the harness is running, including a call that has just
+   * ended; null when no call is known. Follows `live.call` SSE frames and
+   * the initial `/api/live/call` snapshot. */
+  liveCall: LiveCallState | null;
+  /** Counts the `live.call` frames folded in, so a `/api/live/call` lookup
+   * that was out while one landed is known to be older news. */
+  liveCallVersion: number;
+  /** The request order of the newest lookup answer applied: an earlier
+   * lookup that comes back after it is older news too. */
+  liveCallLookupSeq: number;
   /** selected chat — a bot id OR a group id */
   selectedId: string;
   activeView: "chat" | "team-map" | "routines";
@@ -918,6 +941,9 @@ export interface AppState {
   /** Which tab the Plugins panel opens on; "mcp" when a bot's tools
    * sent the user there to add a server. */
   pluginsSurface: "apps" | "mcp";
+  /** The Triggers pop-up (webhooks, as a sentence: when this happens, that
+   * bot should…). */
+  triggersOpen: boolean;
   /** The "New bot" role picker. */
   newBotOpen: boolean;
   /** Creation continues even when the role picker is dismissed. */
@@ -931,6 +957,10 @@ export interface AppState {
    * openmausbot://cloud link; each link counts up. Any other
    * toggleAppSettings (another section, the same one by hand, closing) sets 0. */
   appSettingsCloudLink: number;
+  /** Counts up each time Settings opens on the phone pairing ("Connect your
+   * phone"): Remote access scrolls to the pairing that fits this window and
+   * focuses the button that shows the code. Any other toggleAppSettings sets 0. */
+  appSettingsPhonePairing: number;
   shortcutsOpen: boolean;
   /** the first-run welcome tour, also replayable from Settings → General */
   welcomeOpen: boolean;
@@ -1118,6 +1148,11 @@ export type Action =
   | { type: "interruptGroup"; groupId: string; threadId?: string; onError?: () => void }
   | { type: "instances"; instances: InstanceInfo[] }
   | { type: "configStatus"; config: ConfigStatus }
+  | { type: "liveCall"; call: LiveCallState | null }
+  /** A `GET /api/live/call` answer, requested at `since` (liveCallVersion)
+   * as lookup number `seq`: applied only if no newer frame landed while it
+   * was out, and no later lookup's answer came back first. */
+  | { type: "liveCallLookup"; call: LiveCallState | null; since: number; seq: number }
   | { type: "profileSaved"; profile: Partial<NonNullable<ConfigStatus["profile"]>> }
   | { type: "select"; id: string }
   | {
@@ -1203,12 +1238,13 @@ export type Action =
   | { type: "revealThread"; threadId: string }
   | { type: "toggleSettings"; open?: boolean; section?: BotSettingsSection; botId?: string }
   | { type: "togglePlugins"; open?: boolean; surface?: "apps" | "mcp" }
+  | { type: "toggleTriggers"; open?: boolean }
   | { type: "toggleNewBot"; open?: boolean }
   | { type: "toggleComputer"; open?: boolean }
   | { type: "toggleInspector"; open?: boolean }
   | { type: "focusMessage"; threadId: string; messageId: string; matchText?: string }
   | { type: "focusMessageConsumed"; nonce: number }
-  | { type: "toggleAppSettings"; open?: boolean; section?: AppSettingsSection; cloudLink?: boolean }
+  | { type: "toggleAppSettings"; open?: boolean; section?: AppSettingsSection; cloudLink?: boolean; phonePairing?: boolean }
   | { type: "toggleShortcuts"; open?: boolean }
   | { type: "toggleWelcome"; open?: boolean }
   | { type: "toggleTour"; open?: boolean }
@@ -1508,6 +1544,7 @@ export function reducer(state: AppState, action: Action): AppState {
         inspectorOpen: false,
         appSettingsOpen: false,
         pluginsOpen: false,
+        triggersOpen: false,
       };
     case "showChat":
       return state.activeView === "chat" ? state : { ...state, activeView: "chat" };
@@ -1520,6 +1557,7 @@ export function reducer(state: AppState, action: Action): AppState {
         inspectorOpen: false,
         appSettingsOpen: false,
         pluginsOpen: false,
+        triggersOpen: false,
       };
     case "routinesHydrated":
       return { ...state, routines: action.routines, routineRuns: trimRoutineRuns(action.runs), routinesLoadState: "ready" };
@@ -1597,6 +1635,12 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, instances: action.instances };
     case "configStatus":
       return { ...state, config: action.config };
+    case "liveCall":
+      return { ...state, liveCall: action.call, liveCallVersion: state.liveCallVersion + 1 };
+    case "liveCallLookup":
+      return action.since === state.liveCallVersion && action.seq > state.liveCallLookupSeq
+        ? { ...state, liveCall: action.call, liveCallLookupSeq: action.seq }
+        : state;
     case "profileSaved":
       return state.config ? {
         ...state,
@@ -1986,7 +2030,15 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         pluginsOpen: open,
         pluginsSurface: action.surface ?? state.pluginsSurface,
-        ...(open ? { settingsOpen: false, appSettingsOpen: false, newBotOpen: false, shortcutsOpen: false } : {}),
+        ...(open ? { settingsOpen: false, appSettingsOpen: false, newBotOpen: false, shortcutsOpen: false, triggersOpen: false } : {}),
+      };
+    }
+    case "toggleTriggers": {
+      const open = action.open ?? !state.triggersOpen;
+      return {
+        ...state,
+        triggersOpen: open,
+        ...(open ? { settingsOpen: false, appSettingsOpen: false, newBotOpen: false, shortcutsOpen: false, pluginsOpen: false } : {}),
       };
     }
     case "botCreationPending":
@@ -1995,7 +2047,7 @@ export function reducer(state: AppState, action: Action): AppState {
       const open = action.open ?? !state.newBotOpen;
       return {
         ...state, newBotOpen: open,
-        ...(open ? { settingsOpen: false, appSettingsOpen: false, pluginsOpen: false, shortcutsOpen: false } : {}),
+        ...(open ? { settingsOpen: false, appSettingsOpen: false, pluginsOpen: false, shortcutsOpen: false, triggersOpen: false } : {}),
       };
     }
     case "notice":
@@ -2043,10 +2095,12 @@ export function reducer(state: AppState, action: Action): AppState {
         appSettingsOpen: open,
         appSettingsSection: action.section ?? state.appSettingsSection,
         appSettingsCloudLink: action.cloudLink && open ? state.appSettingsCloudLink + 1 : 0,
+        appSettingsPhonePairing: action.phonePairing && open ? state.appSettingsPhonePairing + 1 : 0,
         settingsOpen: open ? false : state.settingsOpen,
         computerOpen: open ? false : state.computerOpen,
         inspectorOpen: open ? false : state.inspectorOpen,
         pluginsOpen: open ? false : state.pluginsOpen,
+        triggersOpen: open ? false : state.triggersOpen,
       };
     }
     case "toggleShortcuts": {
@@ -2360,6 +2414,9 @@ export const initialState: AppState = {
   sections: [],
   instances: [],
   config: null,
+  liveCall: null,
+  liveCallVersion: 0,
+  liveCallLookupSeq: 0,
   selectedId: "",
   activeView: "chat",
   routines: [],
@@ -2372,6 +2429,7 @@ export const initialState: AppState = {
   settingsOpen: false,
   pluginsOpen: false,
   pluginsSurface: "apps",
+  triggersOpen: false,
   newBotOpen: false,
   botCreationPending: false,
   computerOpen: false,
@@ -2379,6 +2437,7 @@ export const initialState: AppState = {
   appSettingsOpen: false,
   appSettingsSection: "general",
   appSettingsCloudLink: 0,
+  appSettingsPhonePairing: 0,
   shortcutsOpen: false,
   welcomeOpen: false,
   tourOpen: false,
@@ -2399,6 +2458,30 @@ export const initialState: AppState = {
 };
 
 // ── API client ─────────────────────────────────────────────────────────
+/** The call a `live.call` frame (or a `GET /api/live/call` answer) carries,
+ * or null for a malformed one, which is ignored. A missing `call` key is
+ * malformed, never "the line is free": that reading would drop a running
+ * call's bar on a broken frame. */
+export function liveCallFromFrame(frame: unknown): { call: LiveCallState | null } | null {
+  if (!frame || typeof frame !== "object" || !Object.prototype.hasOwnProperty.call(frame, "call")) return null;
+  const call: unknown = Reflect.get(frame, "call");
+  if (call === null) return { call: null };
+  if (!call || typeof call !== "object") return null;
+  const record = call as Record<string, unknown>; // SAFETY: the fields read below are checked before use
+  if (typeof record.callId !== "string" || typeof record.botId !== "string" || typeof record.threadId !== "string" || typeof record.status !== "string") {
+    return null;
+  }
+  return { call: call as LiveCallState };
+}
+
+let liveCallLookups = 0;
+/** The next `GET /api/live/call` lookup's number, in request order (see
+ * `liveCallLookupSeq`). Take it when the request leaves. */
+export function nextLiveCallLookup(): number {
+  liveCallLookups += 1;
+  return liveCallLookups;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   /** The refusal's JSON body, for callers that read more than `error`. */
@@ -3709,6 +3792,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       for (const key of keys) refreshState(key).version += 1;
     };
     const loadAll = async (): Promise<boolean> => {
+      // The Live call snapshot is its own fire-and-forget request: a server
+      // without the route answers 404, and the catch keeps that silent — a
+      // running call still arrives moments later over the SSE `live.call`
+      // frame, so this is only for the case where one was already live
+      // before this window connected.
+      // Applied only if no live.call frame lands while it is out (a frame
+      // is newer news than this answer), and only if the answer to a later
+      // lookup did not come back first. Rendered at once, like a frame.
+      const since = stateRef.current.liveCallVersion;
+      const seq = nextLiveCallLookup();
+      void api<unknown>("/api/live/call")
+        .then((body) => {
+          const answer = liveCallFromFrame(body);
+          if (alive && answer) flushSync(() => rawDispatch({ type: "liveCallLookup", call: answer.call, since, seq }));
+        })
+        .catch(() => {});
       const chat = () =>
         api(`/api/bots?messages=${MESSAGE_PAGE_SIZE}`).then(({ bots, groups, sections, computerControl, botQueuedMessages }) => {
           if (!alive) return;
@@ -3809,7 +3908,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             // Auto-speak is disabled during any call. Call mode owns both the
             // singleton speaker and microphone ordering for its whole lifetime.
             const owner = stateRef.current.bots.find((b) => b.threadId === frame.threadId || b.tasks?.some((task) => task.threadId === frame.threadId));
-            if (owner?.speakReplies && currentCall() === null && frame.message.text?.trim()) {
+            const live = stateRef.current.liveCall;
+            const onLiveCall = Boolean(live && live.status !== "ended" && live.botId === owner?.id);
+            if (owner?.speakReplies && currentCall() === null && !onLiveCall && frame.message.text?.trim()) {
               void speaker.speak(frame.message.text, {
                 botId: owner.id,
                 messageId: frame.message.id,
@@ -3924,6 +4025,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           botPatchQueue.cancel(frame.botId);
           rawDispatch({ type: "deleteBot", botId: frame.botId });
           break;
+        case "live.call": {
+          const framed = liveCallFromFrame(frame);
+          // Rendered at once: a bot message frame right behind this one
+          // decides auto-speak from stateRef, which must know the call by then.
+          if (framed) flushSync(() => rawDispatch({ type: "liveCall", call: framed.call }));
+          break;
+        }
         // a key changed and the fleet hot-reloaded — refresh the picker so
         // newly available providers un-dim immediately
         case "config":

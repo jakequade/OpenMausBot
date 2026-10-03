@@ -191,6 +191,13 @@ const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }> = [
   { method: "POST", path: /^\/api\/tts\/prepare$/ },
   { method: "POST", path: /^\/api\/tts\/speak$/ },
 
+  // Live calls: the phone holds its own WebRTC audio to OpenAI; the Mac
+  // creates the session (the key never leaves it) and runs the call.
+  { method: "POST", path: /^\/api\/live\/session$/ },
+  { method: "POST", path: /^\/api\/live\/call\/end$/ },
+  { method: "GET", path: /^\/api\/live\/call$/ },
+  { method: "PATCH", path: /^\/api\/live\/settings$/ },
+
   // Routines create ordinary tasks using an existing agent configuration.
   // Webhook management remains explicitly denied below.
   { method: "GET", path: /^\/api\/routines$/ },
@@ -221,6 +228,23 @@ const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }> = [
   // to the host's OS-backed credential store.
   { method: "POST", path: /^\/api\/bots\/[\w-]+\/secret-cards\/[\w-]+\/(?:resume|dismiss)$/ },
 ];
+
+/** Notices the companion itself sends the harness, never a device: they are
+ * not in ALLOWED, so the proxy refuses them from a phone, and the harness
+ * accepts them only with the companion's private relay token
+ * (server/request-auth.ts) or, for a standalone harness, from loopback.
+ *
+ * `POST /api/live/device-revoked`: a phone was just unpaired (the device id
+ * rides in `x-openmausbot-companion-device`), so the harness ends the Live
+ * call that phone holds. A phone's requests reach the harness as this
+ * computer's own, so nothing else would tell it the phone lost its access. */
+const COMPANION_NOTICES: ReadonlyArray<{ method: string; path: RegExp }> = [
+  { method: "POST", path: /^\/api\/live\/device-revoked$/ },
+];
+
+export function isCompanionNotice(method: string, path: string): boolean {
+  return COMPANION_NOTICES.some((route) => route.method === method && route.path.test(path));
+}
 
 /** Route families worth naming in the refusal.
  *

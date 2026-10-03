@@ -5054,6 +5054,556 @@
           }
         }
       }
+    },
+    "Voice notes can’t play during a Live call.": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notas de voz não podem ser reproduzidas durante uma ligação ao vivo."
+          }
+        }
+      }
+    },
+    "Runs the agent and its tools inside its Box virtual machine. The VM wakes automatically for each run; keep OpenMausBot running so its scheduler can launch the job.": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Roda o agente e as ferramentas dele dentro da máquina virtual Box. A VM acorda automaticamente a cada execução; mantenha o OpenMausBot rodando para que o agendador consiga iniciar o trabalho."
+          }
+        }
+      }
+    },
+    "This existing Cloud VM choice is preserved, but it cannot run until the paired computer has a configured Box API key and an available Box agent.": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esta escolha de Cloud VM é mantida, mas não pode rodar enquanto o computador pareado não tiver uma chave de API do Box configurada e um agente Box disponível."
+          }
+        }
+      }
+    },
+    "Calling %@…": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ligando para %@…"
+          }
+        }
+      }
+    },
+    "Live with %@": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ao vivo com %@"
+          }
+        }
+      }
+    },
+    "Hanging up…": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desligando…"
+          }
+        }
+      }
+    },
+    "Mute": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Silenciar"
+          }
+        }
+      }
+    },
+    "Unmute": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ativar som"
+          }
+        }
+      }
+    },
+    "Hang up": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desligar"
+          }
+        }
+      }
+    },
+    "Try again": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tentar novamente"
+          }
+        }
+      }
+    },
+    "Live calls need Microphone access. Enable it in Settings → MausBot.": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "As ligações ao vivo precisam de acesso ao Microfone. Ative em Ajustes → MausBot."
+          }
+        }
+      }
+    },
+    "Set up Live calls on your computer first.": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configure as ligações ao vivo no seu computador primeiro."
+          }
+        }
+      }
+    },
+    "%@ is on a call with %@.": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ está em uma ligação com %@."
+          }
+        }
+      }
+    },
+    "a bot": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "um bot"
+          }
+        }
+      }
+    },
+    "Can't reach your computer. %@": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Não foi possível alcançar seu computador. %@"
+          }
+        }
+      }
+    },
+    "The call could not start: %@": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A ligação não pôde começar: %@"
+          }
+        }
+      }
+    },
+    "Call dropped.": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A ligação caiu."
+          }
+        }
+      }
+    },
+    "Call dropped: the audio could not connect.": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A ligação caiu: não foi possível conectar o áudio."
+          }
+        }
+      }
+    },
+    "Call ended.": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ligação encerrada."
+          }
+        }
+      }
+    },
+    "Call ended after a long silence.": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ligação encerrada após um longo silêncio."
+          }
+        }
+      }
+    },
+    "Call ended: it reached OpenAI's time limit.": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ligação encerrada: atingiu o limite de tempo da OpenAI."
+          }
+        }
+      }
+    },
+    "OpenAI ended the call under its content rules.": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A OpenAI encerrou a ligação pelas regras de conteúdo dela."
+          }
+        }
+      }
+    },
+    "Call ended: the chat was deleted.": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ligação encerrada: a conversa foi apagada."
+          }
+        }
+      }
+    },
+    "Call ended: OpenMausBot restarted.": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ligação encerrada: o OpenMausBot reiniciou."
+          }
+        }
+      }
+    },
+    "Call ended: you were signed out.": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ligação encerrada: sua sessão foi encerrada."
+          }
+        }
+      }
+    },
+    "Your computer": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Seu computador"
+          }
+        }
+      }
+    },
+    "An iPhone": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Um iPhone"
+          }
+        }
+      }
+    },
+    "An Android phone": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Um celular Android"
+          }
+        }
+      }
+    },
+    "Another device": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Outro dispositivo"
+          }
+        }
+      }
+    },
+    "From your computer": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Do seu computador"
+          }
+        }
+      }
+    },
+    "From an iPhone": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "De um iPhone"
+          }
+        }
+      }
+    },
+    "From an Android phone": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "De um celular Android"
+          }
+        }
+      }
+    },
+    "From another device": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "De outro dispositivo"
+          }
+        }
+      }
+    },
+    "On a call with %@ · %@": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Em ligação com %@ · %@"
+          }
+        }
+      }
+    },
+    "Start a Live call with %@": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Iniciar uma ligação ao vivo com %@"
+          }
+        }
+      }
+    },
+    "Start call": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Iniciar ligação"
+          }
+        }
+      }
+    },
+    "via call": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "por ligação"
+          }
+        }
+      }
+    },
+    "Voice previews are paused during a Live call.": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "As prévias de voz ficam pausadas durante uma ligação ao vivo."
+          }
+        }
+      }
+    },
+    "This computer is offline.": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este computador está offline."
+          }
+        }
+      }
+    },
+    "Live call settings": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ajustes da ligação ao vivo"
+          }
+        }
+      }
+    },
+    "Takes effect on the next call.": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vale a partir da próxima ligação."
+          }
+        }
+      }
+    },
+    "Sound output": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saída de som"
+          }
+        }
+      }
+    },
+    "Speaker": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alto-falante"
+          }
+        }
+      }
+    },
+    "Earpiece": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fone interno"
+          }
+        }
+      }
+    },
+    "Applies to calls on this iPhone. A connected headset takes the call instead.": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vale para as ligações neste iPhone. Se houver um fone de ouvido conectado, a ligação vai para ele."
+          }
+        }
+      }
+    },
+    "Read replies to typed messages": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ler respostas a mensagens digitadas"
+          }
+        }
+      }
+    },
+    "When this is off, messages you type during a call and the bot's answers to them are not sent to OpenAI.": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quando isto está desligado, as mensagens que você digita durante uma ligação e as respostas do bot a elas não são enviadas à OpenAI."
+          }
+        }
+      }
+    },
+    "Hang up after silence": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desligar após silêncio"
+          }
+        }
+      }
+    },
+    "%lld minutes": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld minute"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld minutes"
+                }
+              }
+            }
+          }
+        },
+        "pt-BR": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld minuto"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld minutos"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "OpenAI key": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chave da OpenAI"
+          }
+        }
+      }
+    },
+    "Managed on your computer": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gerenciada no seu computador"
+          }
+        }
+      }
+    },
+    "A Live call sends your voice to OpenAI, along with the chat's recent messages, the bot's answers and the details of any approval it asks for. The OpenAI key stays on your computer.": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uma ligação ao vivo envia sua voz à OpenAI, junto com as mensagens recentes do chat, as respostas do bot e os detalhes de qualquer aprovação que ele pedir. A chave da OpenAI fica no seu computador."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

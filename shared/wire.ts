@@ -164,6 +164,12 @@ export interface WireTask {
   turnStartedAt?: number;
   /** Where this conversation works when pinned; absent = follow the bot. */
   surface?: Surface;
+  /** The pin above is the machine's own record (where an Auto turn landed,
+   * or the bot's select_computer choice), not a person's, so the next Works
+   * on change moves it. Derived at projection from the server-private
+   * provenance and never stored; absent on a person's pin and on a pin from
+   * before the server recorded who set it. */
+  surfaceAuto?: true;
   /** what this task has spent, banked once per turn */
   usage?: TaskUsage;
   /** the folder this task's turns run in, pinned on its first turn. */
@@ -360,13 +366,17 @@ export interface ResolvedSender {
 /** Who answered a card: a signed-in person (named as their messages are), the
  * owner on this machine, or a session-less local caller on a shared server
  * (`worker`: the Slack worker, or any other process on that machine). */
-export type CardAnswerer =
+export type CardAnswerer = (
   /** `person`: the answering session's opaque person key, recorded on an OMB
    * Cloud home only, where it decides whether an answer came from the owner
    * (server/cloud-lending.ts). */
   | { kind: "session"; name: string; person?: string }
   | { kind: "loopback" }
-  | { kind: "worker" };
+  | { kind: "worker" }
+) & {
+  /** "call": decided by voice on a Live call, not tapped. */
+  via?: "call";
+};
 
 /** One transcript line. Serialized as stored — the durable delivery
  * identity (roomRequest) rides the wire unchanged. */
@@ -419,8 +429,14 @@ export interface WireMessage {
    * a new request. The text is stored enveloped exactly as injected, so any
    * later reader sees the sender and the not-steering framing. */
   aside?: boolean;
-  /** A user-role message that arrived through the server's HTTP API. */
-  via?: "api";
+  /** A user-role message that arrived through the server's HTTP API
+   * ("api"), or a request a person spoke on a Live call ("call"). */
+  via?: "api" | "call";
+  /** A user line an external interface relayed through the guarded send
+   * route (the Slack worker, for someone else, as this computer): nobody
+   * typed it in one of this workspace's clients. A Live call never reads it
+   * back as what the caller typed. */
+  relayed?: boolean;
   /** Which person sent this user message, when the workspace has more than
    * one. The server authenticates per person but used to attribute every
    * user turn to the single profile name, so on a shared or paired instance
@@ -524,6 +540,39 @@ export interface OptionCardData {
   skillRequest?: SkillRequestCardData;
   /** A provider's structured question set. */
   questionRequest?: QuestionRequestCardData;
+}
+
+/** Which app holds the microphone of a Live call. Self-declared; for display and logs only. */
+export type LiveClient = "desktop" | "ios" | "android";
+export type LiveCallStatus = "connecting" | "live" | "ending" | "ended";
+/** Why a call ended. "signed-out": the sign-in or paired phone that started
+ * it was signed out, revoked or unpaired. A client that does not know a
+ * reason shows the call's `error` text, or plain "Call ended.". */
+export type LiveEndReason =
+  | "hung-up" | "idle" | "expired" | "content" | "remote-hangup" | "connection-lost"
+  | "sideband-lost" | "deleted" | "shutdown" | "signed-out" | "error";
+
+/** The one Live call a harness runs. Never carries the key or any speech. */
+export interface LiveCallState {
+  callId: string;
+  botId: string;
+  threadId: string;
+  client: LiveClient;
+  voice: string;
+  /** epoch ms when the session was created */
+  startedAt: number;
+  status: LiveCallStatus;
+  endReason?: LiveEndReason;
+  /** short, user-facing; present when the call ended on a problem */
+  error?: string;
+}
+
+/** Non-secret Live settings, as GET /api/config and PATCH /api/live/settings report them. */
+export interface LiveSettings {
+  configured: boolean;
+  voice: string;
+  readTypedReplies: boolean;
+  idleMinutes: number;
 }
 
 export interface ConnectorCardData {
@@ -689,6 +738,7 @@ export type ServerFrame =
   | { kind: "computer"; botId: string; state: "provisioning" | "waking" }
   | { kind: "computer-control"; botId: string; held: boolean; helpReason: string | null }
   | { kind: "bot.deleted"; botId: string }
+  | { kind: "live.call"; botId: string; threadId: string; call: LiveCallState | null }
   /** The config status object spread flat into the frame; its full typing
    * is the deferred client-model extraction (see j1-phase-bc-progress). */
   | ({ kind: "config" } & Record<string, unknown>);

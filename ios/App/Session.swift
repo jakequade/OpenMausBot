@@ -7,6 +7,7 @@
 // backgrounds, it moves between wifi and cellular. So the stream is torn
 // down deliberately when the app leaves the screen, and on the way back the
 // server is asked what was missed rather than being asked for everything.
+import Combine
 import Foundation
 import OSLog
 import SwiftUI
@@ -89,6 +90,11 @@ final class Session: ObservableObject {
     @Published private(set) var pendingChat: Chat?
 
     private var client: CompanionClient?
+    /// Sent just before the phone stops talking to the active computer (a
+    /// new pairing, a switch, forgetting it), while `client` and `state`
+    /// still belong to it. A Live call hangs up here, so its end request
+    /// reaches the computer that holds the call.
+    let leavingComputer = PassthroughSubject<Void, Never>()
     /// Ciphertext-only operations survive navigation and transient
     /// disconnects so a retry cannot accidentally reseal the same value with
     /// a different HPKE operation id. Nothing here is persisted to disk.
@@ -222,7 +228,30 @@ final class Session: ObservableObject {
                 config.protocolClasses = [VoicePreviewProtocol.self]
                 client = CompanionClient(connection: preview, token: "voice-fixture-token", session: URLSession(configuration: config))
             }
+            if arguments.contains("-live-call-preview") {
+                let config = URLSessionConfiguration.ephemeral
+                config.protocolClasses = [LiveCallPreviewProtocol.self]
+                client = CompanionClient(connection: preview, token: "live-call-fixture-token", session: URLSession(configuration: config))
+            }
+            var fleet = fleet
+            if arguments.contains("-live-call-long-name-preview"),
+               let pepper = fleet.bots.firstIndex(where: { $0.id == "preview-pepper" }) {
+                // Forty characters, too long for the call bar's line: the
+                // name gives way there, the clock does not.
+                fleet.bots[pepper].name = "Pepper, the Quarterly Planning Assistant"
+            }
             state.hydrate(fleet)
+            if arguments.contains("-live-call-room-preview"),
+               let room = try? JSONDecoder().decode(Room.self, from: Data(LiveCallPreviewProtocol.room.utf8)) {
+                // A room beside Pepper, to show the call banner in.
+                state.rooms.append(room)
+                state.messages[room.threadId] = []
+            }
+            if arguments.contains("-live-call-remote-preview") {
+                // The Mac on a call with Pepper's Gmail thread, a minute in:
+                // what the remote bar shows and counts up from.
+                state.liveCall = LiveCallPreviewProtocol.remoteCall(startedAt: Date().addingTimeInterval(-65))
+            }
             if arguments.contains("-chat-focus-preview") {
                 // Put the requested reply several screens inside the fold.
                 var messages = state.messages["preview-gmail"] ?? []
@@ -642,6 +671,7 @@ final class Session: ObservableObject {
     }
 
     private func stopActiveRuntime() {
+        leavingComputer.send()
         resetCredentialEntry()
         streamGeneration += 1
         streamTask?.cancel()
@@ -897,6 +927,7 @@ final class Session: ObservableObject {
                                 ifCursorMatches: expectedCursor) else { continue }
             log.info("hydrated \(snapshot.fleet.bots.count, privacy: .public) bots, \(snapshot.fleet.groups.count, privacy: .public) rooms")
             NotificationCoordinator.shared.setBadge(state.unreadCount)
+            await refreshLiveCall(using: client)
             return
         }
         throw APIError.status(code: 409, message: "Conversations changed while loading. Please try opening this notification again.")
@@ -2152,6 +2183,138 @@ final class Session: ObservableObject {
     func configStatus() async -> ConfigStatus? {
         guard let client else { return nil }
         return try? await client.config()
+    }
+
+    // MARK: - Live calls
+
+    /// Start a Live call on the Mac with this phone's SDP offer. Throws so
+    /// LiveCallController can tell a missing key from a busy line from a
+    /// dead network; it turns each into words. A revoked token still goes
+    /// back to pairing first, as it does from every other action.
+    func startLiveCall(botId: String, threadId: String, sdp: String) async throws -> (
+        start: LiveCallStart, end: @MainActor () -> Task<LiveCallState?, Never>
+    ) {
+        guard let client else { throw APIError.transport("This computer is offline.") }
+        do {
+            let answer = try await client.startLiveCall(botId: botId, threadId: threadId, sdp: sdp)
+            guard self.client?.connection.id == client.connection.id else {
+                _ = try? await Task { try await client.endLiveCall(callId: answer.call.callId) }.value
+                throw APIError.transport("The computer changed while the call was starting.")
+            }
+            // The controller may be suspended applying the answer when the
+            // computer changes. Its abandoned-start cleanup still belongs here.
+            return (answer, { self.endLiveCall(callId: answer.call.callId, using: client) })
+        } catch let error as APIError where error.isUnauthorized {
+            // A computer this phone just left does not speak for the next one.
+            if self.client?.connection.id == client.connection.id { status = .unauthorized }
+            throw error
+        }
+    }
+
+    /// Hang up on the Mac. Nothing to show on failure: the bar is already
+    /// closing, and the Mac's idle timer ends a call a dead network kept.
+    /// This is the controller's end, for this phone's own call; the remote
+    /// bar's hang-up is `hangUpRemoteLiveCall`, which does show.
+    ///
+    /// The request goes to the computer connected when this is called, not
+    /// when it is sent: changing computers hangs up first
+    /// (`leavingComputer`), then replaces `client` before the task runs.
+    @discardableResult
+    func endLiveCall(callId: String) -> Task<LiveCallState?, Never> {
+        endLiveCall(callId: callId, using: client)
+    }
+
+    private func endLiveCall(callId: String, using client: CompanionClient?) -> Task<LiveCallState?, Never> {
+        return Task {
+            guard let client else { return nil }
+            let current = { self.client?.connection.id == client.connection.id }
+            do {
+                let answer = try await client.endLiveCall(callId: callId)
+                // The answer is the Mac's word that the call ended: apply it
+                // now, as the remote bar's hang-up does, rather than leave the
+                // line reading as this call until the frame that follows it.
+                guard current() else { return answer }
+                if state.applyLiveCallEnd(callId: callId, answer: answer) {
+                    await refreshLiveCall(using: client)
+                }
+                return answer
+            } catch let error as APIError where error.isUnauthorized {
+                // A computer this phone just left does not speak for the next one.
+                if current() { status = .unauthorized }
+                return nil
+            } catch {
+                log.error("live call end failed: \(error.localizedDescription, privacy: .public)")
+                return nil
+            }
+        }
+    }
+
+    /// Hang up a call another device holds, from this chat's remote bar.
+    /// Unlike the controller's end, nothing else is closing here: the bar
+    /// stays until the Mac says so. A failure shows the Mac's (or the
+    /// sidecar's) own words in the usual alert, and the Mac's answer takes
+    /// the bar down now instead of on the frame that follows it.
+    func hangUpRemoteLiveCall(callId: String) async {
+        guard let client else {
+            actionError = String(localized: "This computer is offline.")
+            return
+        }
+        let current = { self.client?.connection.id == client.connection.id }
+        do {
+            let answer = try await client.endLiveCall(callId: callId)
+            guard current() else { return }
+            if state.applyLiveCallEnd(callId: callId, answer: answer) {
+                await refreshLiveCall(using: client)
+            }
+        } catch let error as APIError where error.isUnauthorized {
+            // A computer this phone just left does not speak for the next one.
+            if current() { status = .unauthorized }
+        } catch {
+            if current() { actionError = error.localizedDescription }
+        }
+    }
+
+    /// Nil when the change did not reach the Mac; `actionError` then says
+    /// why, so the settings sheet never shows an unsaved change as saved.
+    func updateLiveSettings(_ patch: LiveSettingsPatch) async -> LiveSettings? {
+        guard let client else {
+            actionError = String(localized: "This computer is offline.")
+            return nil
+        }
+        let current = { self.client?.connection.id == client.connection.id }
+        do {
+            return try await client.updateLiveSettings(patch)
+        } catch let error as APIError where error.isUnauthorized {
+            // A computer this phone just left does not speak for the next one.
+            if current() { status = .unauthorized }
+            return nil
+        } catch {
+            if current() { actionError = error.localizedDescription }
+            return nil
+        }
+    }
+
+    /// A phone that connects mid-call must learn about it: hydrate carries
+    /// the fleet, not the line. Resumed streams replay the frame instead.
+    /// An older computer has no such route; the stream will say if a call
+    /// starts, so that failure is only logged.
+    ///
+    /// The stream keeps running while the lookup is out. A `live.call` frame
+    /// (or a hang-up's answer) that lands meanwhile is newer than the
+    /// lookup, so the answer is applied only if the line and the cursor
+    /// are still where they were — the same guard `hydrate` uses.
+    private func refreshLiveCall(using client: CompanionClient) async {
+        let expectedCursor = state.cursor
+        let expectedLine = state.liveCall
+        do {
+            let call = try await client.liveCall()
+            guard self.client?.connection.id == client.connection.id else { return }
+            if !state.applyLiveCallLookup(call, ifCursorMatches: expectedCursor, lineWas: expectedLine) {
+                log.info("live call lookup dropped: the stream moved on while it was out")
+            }
+        } catch {
+            log.info("live call lookup skipped: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     func botOverview(for bot: Bot) async -> BotOverview? {

@@ -82,6 +82,12 @@ public struct CompanionState: Sendable {
     /// bounded tombstone list, so a slow response cannot re-add a row for a
     /// message that is already in the transcript.
     public var drainedQueueIds: [String] = []
+    /// The Live call the paired computer is running, or nil. The harness owns
+    /// it; the phone never writes a guess from its own actions — a
+    /// `live.call` frame, `GET /api/live/call` (Session) or the harness's
+    /// answer to a hang-up (`applyLiveCallEnd`) is the only source. Kept as
+    /// `ended` until the harness clears it, so the bar can say why.
+    public var liveCall: LiveCallState?
 
     public init() {}
 
@@ -509,6 +515,9 @@ public struct CompanionState: Sendable {
         case let .botQueued(queues):
             replaceBotQueues(queues)
 
+        case let .liveCall(_, _, call):
+            liveCall = call
+
         // Nothing to fold: config and provisioning state are not part of
         // this client's job yet.
         case .computer, .config, .unknown:
@@ -578,6 +587,43 @@ public struct CompanionState: Sendable {
         default:
             break
         }
+    }
+
+    /// The harness's answer to `POST /api/live/call/end` for `callId`, from
+    /// the remote bar's hang-up: the bar goes on the answer rather than on
+    /// the frame that follows it. Applied only while that call still reads
+    /// as running here — a frame that already said `ended`, cleared the line
+    /// or brought a newer call is later news than this answer.
+    ///
+    /// `answer` is nil when the harness no longer runs that call (404).
+    /// Returns true when the call still reads as running all the same: a
+    /// frame was missed, and the caller should ask for the line again rather
+    /// than guess at it.
+    public mutating func applyLiveCallEnd(callId: String, answer: LiveCallState?) -> Bool {
+        guard let shown = liveCall, shown.callId == callId, shown.isRunning else { return false }
+        guard let answer else { return true }
+        if answer.callId == callId { liveCall = answer }
+        return false
+    }
+
+    /// The harness's answer to `GET /api/live/call`, applied only if nothing
+    /// newer reached the line while the request was out: no frame folded
+    /// (the cursor is where it was) and no hang-up answer applied (the line
+    /// is what it was). A lookup that straddles a start could otherwise put
+    /// back a `null` from before the 201 and end the call that just began.
+    /// Mirrors `hydrate(_:waitingThreads:ifCursorMatches:)`.
+    ///
+    /// Returns false when the answer was stale and dropped; the stream
+    /// already carried something newer.
+    @discardableResult
+    public mutating func applyLiveCallLookup(
+        _ call: LiveCallState?,
+        ifCursorMatches expectedCursor: String?,
+        lineWas expectedLine: LiveCallState?
+    ) -> Bool {
+        guard cursor == expectedCursor, liveCall == expectedLine else { return false }
+        liveCall = call
+        return true
     }
 
     /// Forget a bot's screen. Called when the panel closes, so the next one

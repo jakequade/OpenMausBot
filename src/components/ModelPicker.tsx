@@ -21,6 +21,10 @@ import { ChatGptPlanStatus } from "./ChatGptPlanStatus";
 import { approvalModeFor, modelSwitchNeedsAsk } from "../../shared/approval-mode";
 import { cn } from "@/lib/cn";
 import { useMenuMotion } from "./MenuMotion";
+import { repeatedModelLabels, SimpleModelPane } from "./SimpleModelPane";
+import { useAdvancedMode } from "@/lib/interface-mode";
+import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
+import { friendlyEffort, simpleEffortLevels } from "@/lib/model-friendly";
 import { t } from "@/lib/i18n";
 import { COMPACT_SQUARE } from "@/lib/compact-chip";
 
@@ -164,13 +168,15 @@ function variantLabel(option: ModelVariantOption): string {
 }
 
 /** ACP variant ids are opaque; their model/session declares the available choices. */
-export function ModelVariantRow({ bot, threadId, updateBotDefault, className, label, compact = false }: {
+export function ModelVariantRow({ bot, threadId, updateBotDefault, className, label, compact = false, wide = false }: {
   bot: Bot;
   threadId?: string;
   updateBotDefault?: boolean;
   className?: string;
   label?: ReactNode;
   compact?: boolean;
+  /** Compact only: the select spans the whole row (the Simple picker's band). */
+  wide?: boolean;
 }) {
   const { state, dispatch } = useStore();
   const selection = bot.modelSelection;
@@ -195,7 +201,8 @@ export function ModelVariantRow({ bot, threadId, updateBotDefault, className, la
         <select aria-label="Reasoning variant" disabled={bot.busy}
           value={selection.variant === undefined ? "unset" : missing ? "missing" : String(options.findIndex((option) => option.id === selection.variant))}
           onChange={(event) => choose(options[Number(event.target.value)]?.id)}
-          className="min-w-0 max-w-[65%] rounded-lg border border-hairline/40 bg-inset px-2 py-1.5 text-[12px] text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-50">
+          className={cn("min-w-0 rounded-lg border border-hairline/40 bg-inset px-2 py-1.5 text-[12px] text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-50",
+            wide ? "flex-1" : "max-w-[65%]")}>
           <option value="unset">Use session setting</option>
           {missing && <option value="missing" disabled>{selection.variant} ({unavailable ? "unavailable" : "unverified"})</option>}
           {options.map((option, index) => <option key={option.id} value={String(index)}>{variantLabel(option)}</option>)}
@@ -330,6 +337,43 @@ function ModelSearch({
   );
 }
 
+export type RailProvider = {
+  /** The rail's own entry: one per sign-in family, else one per instance. */
+  instance: InstanceInfo;
+  /** What a click opens: for a sign-in family, the account last browsed. */
+  target: InstanceInfo;
+  label: string;
+  selected: boolean;
+};
+
+/** The providers the rail shows, one button each, folded per sign-in family
+ * and grouped Cloud / API keys / Local. Shared with the Simple view so both
+ * list the same providers the same way. */
+export function railProviders(instances: InstanceInfo[], selectedInstance: InstanceInfo | undefined,
+  claudeInstance: InstanceInfo | undefined, openaiInstance: InstanceInfo | undefined) {
+  const firstOf: Record<SignInFamily, InstanceInfo | undefined> = {
+    claude: instances.find((instance) => isClaudeAccount(instance) && instance.claudeAccount?.isDefault)
+      ?? instances.find(isClaudeAccount),
+    openai: instances.find((instance) => signInFamily(instance) === "openai"),
+  };
+  const opensOn: Record<SignInFamily, InstanceInfo | undefined> = { claude: claudeInstance, openai: openaiInstance };
+  const providers = instances.filter((instance) => {
+    const family = signInFamily(instance);
+    return !family || instance === firstOf[family];
+  });
+  const entry = (instance: InstanceInfo): RailProvider => {
+    const family = signInFamily(instance);
+    return {
+      instance,
+      target: family ? opensOn[family] ?? instance : instance,
+      label: family ? SIGN_IN_FAMILY_LABEL[family] : instance.displayName,
+      selected: family ? signInFamily(selectedInstance) === family : instance.instanceId === selectedInstance?.instanceId,
+    };
+  };
+  const { subscription, api, custom } = splitEngineRail(providers);
+  return { subscription: subscription.map(entry), api: api.map(entry), custom: custom.map(entry) };
+}
+
 export function ModelEngineRail({ instances, selectedInstance, claudeInstance, openaiInstance, onSelect, onAddApiKeys }: {
   instances: InstanceInfo[];
   selectedInstance?: InstanceInfo;
@@ -341,22 +385,8 @@ export function ModelEngineRail({ instances, selectedInstance, claudeInstance, o
    * has no keys section (a remote client). */
   onAddApiKeys?: () => void;
 }) {
-  const firstOf: Record<SignInFamily, InstanceInfo | undefined> = {
-    claude: instances.find((instance) => isClaudeAccount(instance) && instance.claudeAccount?.isDefault)
-      ?? instances.find(isClaudeAccount),
-    openai: instances.find((instance) => signInFamily(instance) === "openai"),
-  };
-  const opensOn: Record<SignInFamily, InstanceInfo | undefined> = { claude: claudeInstance, openai: openaiInstance };
-  const providers = instances.filter((instance) => {
-    const family = signInFamily(instance);
-    return !family || instance === firstOf[family];
-  });
-  const { subscription, api, custom: local } = splitEngineRail(providers);
-  const railButton = (instance: InstanceInfo) => {
-    const family = signInFamily(instance);
-    const target = family ? opensOn[family] ?? instance : instance;
-    const selected = family ? signInFamily(selectedInstance) === family : instance.instanceId === selectedInstance?.instanceId;
-    const label = family ? SIGN_IN_FAMILY_LABEL[family] : instance.displayName;
+  const { subscription, api, custom: local } = railProviders(instances, selectedInstance, claudeInstance, openaiInstance);
+  const railButton = ({ instance, target, selected, label }: RailProvider) => {
     const attention = needsCli(target) || needsSignIn(target) || Boolean(target.snapshot.update);
     const managedBy = target.policy ? t("policy.managedBy", { organization: target.policy.organizationName }) : undefined;
     return (
@@ -427,6 +457,12 @@ export function ClaudeAccountSelect({ accounts, selectedId, onSelect }: {
   );
 }
 
+const POPOVER_WIDTH = 420;
+/** The Simple view's width: a 128px provider column beside the models. */
+export const SIMPLE_POPOVER_WIDTH = 380;
+/** Past this many models, the Simple view's opened list gets a search box. */
+const SIMPLE_SEARCH_AFTER = 12;
+
 export function ModelPicker({
   bot,
   threadId,
@@ -452,6 +488,14 @@ export function ModelPicker({
   const [refreshing, setRefreshing] = useState(false);
   const [probingLocal, setProbingLocal] = useState<string | null>(null);
   const [scope, setScope] = useState<"bot" | "thread">("thread");
+  // Simple mode opens on the plain-words view; a provider's "Set up" (or
+  // Advanced mode) shows the full picker in the same popover.
+  const advanced = useAdvancedMode();
+  const ownerOrAdmin = useOwnerOrAdmin();
+  // Guests can choose a model for their own Cloud conversation, not change
+  // the shared bot's default. Keep choices thread-only until authority loads.
+  const simpleUpdatesBotDefault = !state.config?.cloudHome || ownerOrAdmin === true;
+  const [fullView, setFullView] = useState(false);
   const [pendingSwitch, setPendingSwitch] = useState<{ botId: string; threadId: string;
     selection: ModelSelection; updateBotDefault: boolean; name: string } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -460,19 +504,24 @@ export function ModelPicker({
   const lastClaudeIdRef = useRef<string | null>(null);
   const lastOpenaiIdRef = useRef<string | null>(null);
 
+  // Simple mode shows the plain-words pane in the chat header's popover and
+  // inline where the picker is contained (the bot panel's Default model).
+  const simpleView = !advanced && !fullView;
+  // The Simple view has its own, narrower width; the full picker keeps its.
+  const popoverWidth = simpleView ? SIMPLE_POPOVER_WIDTH : POPOVER_WIDTH;
   useLayoutEffect(() => {
     if (!open || contained) return;
     const place = () => {
       const rect = rootRef.current?.getBoundingClientRect();
       if (!rect) return;
-      const width = Math.min(420, window.innerWidth - 32);
+      const width = Math.min(popoverWidth, window.innerWidth - 32);
       setPlacement({ left: Math.max(16, Math.min(rect.right - width, window.innerWidth - width - 16)) - rect.left,
         maxHeight: Math.max(0, Math.min(600, window.innerHeight - rect.bottom - 24)) });
     };
     place();
     window.addEventListener("resize", place);
     return () => window.removeEventListener("resize", place);
-  }, [open, contained]);
+  }, [open, contained, popoverWidth]);
 
   const selection = bot.modelSelection;
   const active = state.instances.find((instance) => instance.instanceId === selection.instanceId);
@@ -555,7 +604,8 @@ export function ModelPicker({
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       if (query) setQuery("");
-      else if (pane === "custom" && railInstance?.models.options.some((option) => !option.custom)) setPane("main");
+      // The Simple view shows no local pane to step back from.
+      else if (!simpleView && pane === "custom" && railInstance?.models.options.some((option) => !option.custom)) setPane("main");
       else setOpen(false);
     };
     window.addEventListener("mousedown", closeOnOutsideClick);
@@ -564,7 +614,7 @@ export function ModelPicker({
       window.removeEventListener("mousedown", closeOnOutsideClick);
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [open, pane, query, railInstance]);
+  }, [open, pane, query, railInstance, simpleView]);
 
   const resetList = () => {
     setQuery("");
@@ -580,13 +630,17 @@ export function ModelPicker({
     resetList();
   };
 
-  const openLocalModels = (instance: InstanceInfo) => {
-    setPane("custom");
-    resetList();
+  const lookForLocal = (instance: InstanceInfo) => {
     if (needsCli(instance) || instance.policy || probingLocal === instance.instanceId) return;
     setProbingLocal(instance.instanceId);
     void probeLocalModels(instance.instanceId, refreshInstanceModels).then(() =>
       setProbingLocal((current) => (current === instance.instanceId ? null : current)));
+  };
+
+  const openLocalModels = (instance: InstanceInfo) => {
+    setPane("custom");
+    resetList();
+    lookForLocal(instance);
   };
 
   const openApiKeys = () => {
@@ -606,7 +660,9 @@ export function ModelPicker({
   const pick = (instance: InstanceInfo, model: string) => {
     if (bot.busy || instance.policy) return;
     const nextSelection = modelSelectionForPick(selection, instance, model);
-    const updateBotDefault = !threadId || scope === "bot";
+    // Simple mode has no scope choice: an owner's pick is also the bot's
+    // default, while a Cloud guest changes only their own conversation.
+    const updateBotDefault = !threadId || (simpleView ? simpleUpdatesBotDefault : scope === "bot");
     const profile = state.bots.find((candidate) => candidate.id === bot.id) ?? bot;
     const targets = updateBotDefault ? [currentTaskBot(profile, threadId ?? bot.threadId), profile] : [bot];
     if (targets.some((target) => modelSwitchNeedsAsk(approvalModeFor(target),
@@ -652,6 +708,61 @@ export function ModelPicker({
     </span>
   );
 
+  // Simple mode lists every provider the picker knows, in the rail's order:
+  // sign-ins, then API keys, then local engines. A sign-in family's row opens
+  // on the account last browsed, else the bot's, else the first one ready to
+  // use, so a signed-out first account never hides a signed-in second one;
+  // the family's other accounts are a select away above its models.
+  const simpleOpensOn = (accounts: InstanceInfo[], lastId: string | null) =>
+    accounts.find((account) => account.instanceId === lastId)
+      ?? accounts.find((account) => account.instanceId === selection.instanceId)
+      ?? accounts.find((account) => !needsCli(account) && !needsSignIn(account))
+      ?? accounts[0];
+  const simpleProviders = (() => {
+    const groups = railProviders(pickerInstances, railInstance,
+      simpleOpensOn(claudeAccounts, lastClaudeIdRef.current), simpleOpensOn(openaiAccounts, lastOpenaiIdRef.current));
+    return [...groups.subscription, ...groups.api, ...groups.custom];
+  })();
+  const simpleFamily = signInFamily(railInstance);
+  const simpleAccounts = simpleFamily === "claude" ? claudeAccounts : simpleFamily === "openai" ? openaiAccounts : [];
+  const simpleLabel = simpleProviders.find((provider) => provider.selected)?.label ?? railInstance?.displayName ?? "";
+  // Simple mode has no separate local pane: a provider lists its own models,
+  // then the local ones it can run (loaded first). Its own models need the
+  // sign-in local ones do not, so a signed-out engine lists only those, and
+  // a way to sign in after them. None of this hangs on the full picker's
+  // pane, so browsing back to a provider shows the same list.
+  const simpleSignIn = !customOnly && needsSignIn(railInstance);
+  const simpleOfficial = customOnly || simpleSignIn ? [] : official;
+  const simpleLocal = partitionCustomModels(custom);
+  const simpleAll = [...simpleOfficial, ...simpleLocal.pinned, ...simpleLocal.rest];
+  const simpleSetup = Boolean(railInstance && (railInstance.policy || needsCli(railInstance) || (simpleSignIn && simpleAll.length === 0)));
+  const simpleSuggested = railInstance
+    ? suggestedModels(simpleAll, railInstance.models.default, currentModel, COMPACT_MODEL_COUNT)
+    : [];
+  // "Show all" opens the list in place: the suggested rows stay on top.
+  const simpleOpened = [...simpleSuggested, ...simpleAll.filter((option) => !simpleSuggested.includes(option))];
+  const simpleSearch = showAll && simpleAll.length > SIMPLE_SEARCH_AFTER;
+  const simpleQuery = simpleSearch ? query : "";
+  const simpleModels = simpleQuery ? filterCustomModels(simpleOpened, simpleQuery) : showAll ? simpleOpened : simpleSuggested;
+  // Browsing to a provider, or opening its whole list, is asking for every
+  // model it has, so one that runs local models looks for them again (local
+  // servers are otherwise probed only at startup, after sign-in or on refresh).
+  const lookForLocalIn = (instance: InstanceInfo) => {
+    if (offersLocalModels(instance, instance.models.options.filter((option) => option.custom).length)) lookForLocal(instance);
+  };
+  const browseSimple = (instance: InstanceInfo) => {
+    selectRail(instance);
+    lookForLocalIn(instance);
+  };
+  const activeLevels = active?.capabilities?.effortLevels ?? [];
+  const simpleEffort = activeLevels.length > 0 ? {
+    levels: simpleEffortLevels(activeLevels, selection.effort),
+    current: selection.effort,
+    // Follow the same Cloud authority rule as a Simple model pick.
+    onPick: (level: EffortLevel) => dispatch({ type: "setModel", botId: bot.id, threadId,
+      ...(threadId && simpleUpdatesBotDefault ? { updateBotDefault: true } : {}), selection: { ...selection, effort: level } }),
+  } : null;
+
   const renderRow = (option: ModelOption) => (
     <ModelRow
       key={option.id}
@@ -674,7 +785,10 @@ export function ModelPicker({
         setRailId(initial?.instanceId ?? null);
         setOpen((wasOpen) => {
           const next = !wasOpen;
-          if (next) openFor(initial);
+          if (next) {
+            openFor(initial);
+            setFullView(false);
+          }
           return next;
         });
       }}
@@ -718,7 +832,7 @@ export function ModelPicker({
           <span data-model-variant className="max-w-[120px] truncate text-ink-secondary">· {selectedVariantLabel}</span>
         ) : selection.effort && (
           <span data-model-effort className="shrink-0 text-ink-secondary">
-            · {effortLabel(selection.effort)}
+            · {advanced ? effortLabel(selection.effort) : friendlyEffort(selection.effort)}
           </span>
         )}
       </span>
@@ -750,15 +864,72 @@ export function ModelPicker({
           role="dialog"
           aria-label={t("model.choose")}
           {...motion.exitProps}
-          style={contained ? undefined : placement}
+          style={contained ? undefined : { ...placement, width: popoverWidth }}
           className={cn(
             "flex overflow-hidden rounded-2xl border border-hairline/50 bg-card",
             contained
               ? "relative mt-3 w-full max-h-[min(420px,50dvh)]"
-              : "absolute right-0 top-full z-30 mt-2 w-[420px] max-w-[calc(100vw-2rem)] max-h-[min(600px,calc(100dvh-7rem))] shadow-2xl shadow-black/50",
+              : "absolute right-0 top-full z-30 mt-2 max-w-[calc(100vw-2rem)] max-h-[min(600px,calc(100dvh-7rem))] shadow-2xl shadow-black/50",
             motion.className,
           )}
         >
+          {simpleView ? (
+            <SimpleModelPane
+              providers={simpleProviders}
+              onProvider={browseSimple}
+              account={railInstance && simpleAccounts.length > 1 ? (
+                <ClaudeAccountSelect accounts={simpleAccounts} selectedId={railInstance.instanceId} onSelect={browseSimple} />
+              ) : undefined}
+              managedBy={railInstance?.policy?.organizationName ?? null}
+              // With several accounts the select above names the one at issue.
+              needsSetup={railInstance && simpleSetup ? { name: simpleAccounts.length > 1 ? railInstance.displayName : simpleLabel } : null}
+              signIn={railInstance && simpleSignIn && !simpleSetup ? { name: simpleLabel } : null}
+              onSetUp={() => {
+                // Sign-in is for the provider's own models: the full picker's main list.
+                if (simpleSignIn && hasOfficialModels) setPane("main");
+                setFullView(true);
+              }}
+              models={simpleModels}
+              repeatedLabels={repeatedModelLabels(simpleAll)}
+              query={simpleQuery}
+              // One button that opens the list and folds it back, so focus stays on it.
+              showAll={simpleAll.length > simpleSuggested.length && !simpleQuery ? {
+                count: simpleAll.length,
+                open: showAll,
+                onToggle: () => {
+                  if (showAll) {
+                    resetList();
+                    return;
+                  }
+                  setShowAll(true);
+                  if (railInstance) lookForLocalIn(railInstance);
+                },
+              } : null}
+              onRefresh={refreshModels}
+              refreshing={refreshing}
+              search={simpleSearch ? (
+                <ModelSearch
+                  value={query}
+                  local={simpleOfficial.length === 0}
+                  onChange={setQuery}
+                  onEscape={() => (query ? setQuery("") : setOpen(false))}
+                />
+              ) : undefined}
+              currentModelId={currentModel}
+              onPick={(model) => railInstance && pick(railInstance, model)}
+              variantsRow={active?.capabilities?.modelVariants ? (
+                // A closed select shows only its choice, so it keeps a short name.
+                <ModelVariantRow compact wide bot={bot} threadId={threadId} updateBotDefault={Boolean(threadId) && simpleUpdatesBotDefault}
+                  label={<span className="shrink-0 text-[12px] font-medium text-ink-secondary">{t("model.simple.reasoning")}</span>} />
+              ) : undefined}
+              effort={simpleEffort}
+              onManage={() => {
+                setOpen(false);
+                dispatch({ type: "toggleAppSettings", open: true, section: "engines" });
+              }}
+            />
+          ) : (
+          <>
           {pickerInstances.length > 0 && <ModelEngineRail instances={pickerInstances} selectedInstance={railInstance} claudeInstance={claudeRailInstance} openaiInstance={openaiRailInstance} onSelect={selectRail}
             onAddApiKeys={window.ogb?.remoteClient?.active === true ? undefined : openApiKeys} />}
 
@@ -1025,6 +1196,8 @@ export function ModelPicker({
               )}
             </div>
           </div>
+          </>
+          )}
         </div>
       )}
       <ConfirmDialog

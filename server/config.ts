@@ -9,14 +9,13 @@ import { normalizeImageGenerationUrl, type ImageGenerationConfig } from "../shar
 
 import { writeFileAtomic } from "./atomic.ts";
 import { newBotDefaultsSchema, type NewBotDefaults } from "./new-bot-defaults.ts";
-import { EFFORT_LEVELS, type EffortLevel } from "../shared/wire.ts";
+import { EFFORT_LEVELS, type EffortLevel, type LiveSettings } from "../shared/wire.ts";
 import { isModelVariant, type InstanceConfigMap, type ModelSelection } from "./contracts.ts";
 import { PROVIDER_ICON_PRESETS, providerIconError } from "../shared/provider-icon.ts";
 import type { McpServerSpec } from "./contracts.ts";
 import { isRemoteMcpServer, parseStoredMcpServer } from "./mcp-registry.ts";
 import { parseJson, schemaIssue, type JsonObject, type JsonValue } from "./schema.ts";
 import { CLOUD_SEAT_IDLE_STOP_MS } from "./cloud-overflow.ts";
-import { cloudHomeConfigured } from "./cloud-home.ts";
 
 const optionalText = z.string().optional();
 const SSH_ALIAS = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
@@ -511,6 +510,15 @@ const appConfigSchema = z.object({
       .optional(),
     jobs: z.object({ roomRouting: z.boolean().optional() }).optional(),
   }).optional(),
+  /** Live calls: an OpenAI project key for GPT-Live, kept apart from every
+   * other OpenAI credential so a Live call never bills an image or engine key
+   * the user did not hand to it. `voice` is a GPT-Live built-in voice name. */
+  live: z.object({
+    key: optionalText,
+    voice: z.string().trim().max(40).regex(/^[a-z]*$/, "a Live voice is a lowercase built-in voice name").optional(),
+    readTypedReplies: z.boolean().optional(),
+    idleMinutes: z.number().int().min(1).max(60).optional(),
+  }).optional(),
   /** Avatar provider credentials stay separate; choosing a router never reuses a cloud key. */
   imageGen: z.object({
     provider: z.enum(["openai", "xai", "custom"]).optional(),
@@ -620,6 +628,7 @@ export interface AppConfig {
   /** The decision model; see the schema above and server/decider. */
   decider?: { enabled?: boolean; provider?: "jev" | "off"; key?: string; baseUrl?: string; jobs?: { roomRouting?: boolean } };
   imageGen?: ImageGenerationConfig;
+  live?: { key?: string; voice?: string; readTypedReplies?: boolean; idleMinutes?: number };
   profile?: { name?: string; email?: string; aboutMe?: string };
   rooms?: { turnTimeoutMinutes: number; handoffLifetimeMinutes?: number; handoffMinRunwayMinutes?: number; handoffHardCapMinutes?: number };
   threads?: { maxConcurrentPerBot: number; eventLogMaxBytes?: number; eventLogRetentionDays?: number };
@@ -765,6 +774,19 @@ export function roomTurnTimeoutMinutes(cfg: AppConfig): number {
   return cfg.rooms?.turnTimeoutMinutes ?? DEFAULT_ROOM_TURN_TIMEOUT_MINUTES;
 }
 
+export const LIVE_IDLE_MINUTES_DEFAULT = 5;
+
+/** Non-secret Live settings. The key only shows up as `configured`. */
+export function liveSettingsFor(cfg: AppConfig): LiveSettings {
+  const minutes = cfg.live?.idleMinutes;
+  return {
+    configured: Boolean(cfg.live?.key?.trim()),
+    voice: cfg.live?.voice ?? "",
+    readTypedReplies: cfg.live?.readTypedReplies ?? true,
+    idleMinutes: Number.isInteger(minutes) && minutes! >= 1 && minutes! <= 60 ? minutes! : LIVE_IDLE_MINUTES_DEFAULT,
+  };
+}
+
 export interface RoomHandoffLimitsMs {
   lifetimeMs: number;
   minRunwayMs: number;
@@ -847,14 +869,11 @@ export function routinesInConversationEnabled(cfg: AppConfig): boolean {
   return cfg.features?.routinesInConversation === true;
 }
 
-/** Workspace-level gate for the experimental built-in browser. A bot's own
- * switch sits under it, so either can withhold the browser. Off until the
- * desktop's first-run welcome turns it on. A Cloud home (cloud-home.ts)
- * skips that welcome, ships the browser in its image and has no other screen
- * of its own, so there it is on unless the person switched it off. */
-export function builtInBrowserEnabled(cfg: AppConfig, env: NodeJS.ProcessEnv = process.env): boolean {
-  const chosen = cfg.features?.browser;
-  return chosen === undefined ? cloudHomeConfigured(env) : chosen === true;
+/** Workspace-level gate for the built-in browser. A bot's own switch sits
+ * under it, so either can withhold the browser. On unless the person switched
+ * it off: an explicit `false` (Settings, or a bot's computer panel) is kept. */
+export function builtInBrowserEnabled(cfg: AppConfig, _env: NodeJS.ProcessEnv = process.env): boolean {
+  return cfg.features?.browser !== false;
 }
 
 /** Opt-in computer sharing: the routes, the agent tools, the advertised
@@ -950,6 +969,7 @@ export const FLEET_NEUTRAL_KEYS: ReadonlySet<string> = new Set([
   // no engine reads it: the harness asks it before a turn starts
   "decider",
   "imageGen",
+  "live",
   "vps",
   "rooms",
   "threads",
@@ -1087,6 +1107,8 @@ export function loadConfig(): AppConfig {
   if (process.env.OMB_FISH_AUDIO_API_KEY !== undefined) cfg.tts.fishKey = process.env.OMB_FISH_AUDIO_API_KEY;
   cfg.decider = { ...cfg.decider };
   if (process.env.OMB_JEV_API_KEY !== undefined) cfg.decider.key = process.env.OMB_JEV_API_KEY;
+  cfg.live = { ...cfg.live };
+  if (process.env.OMB_OPENAI_LIVE_KEY !== undefined) cfg.live.key = process.env.OMB_OPENAI_LIVE_KEY;
   cfg.imageGen = { ...cfg.imageGen };
   if (process.env.OMB_OPENAI_IMAGE_KEY !== undefined) cfg.imageGen.key = process.env.OMB_OPENAI_IMAGE_KEY;
   if (process.env.OMB_CUSTOM_IMAGE_KEY !== undefined) cfg.imageGen.customApiKey = process.env.OMB_CUSTOM_IMAGE_KEY;
@@ -1125,6 +1147,7 @@ export function syncCredentialEnv(patch: Partial<Omit<AppConfig, "threads" | "ne
     [patch.decider?.key, "OMB_JEV_API_KEY"],
     [patch.imageGen?.key, "OMB_OPENAI_IMAGE_KEY"],
     [patch.imageGen?.customApiKey, "OMB_CUSTOM_IMAGE_KEY"],
+    [patch.live?.key, "OMB_OPENAI_LIVE_KEY"],
   ];
   for (const [value, name] of secrets) {
     if (value === undefined) continue;
@@ -1170,6 +1193,7 @@ export const WORKSPACE_CREDENTIAL_ENV = [
   "OMB_JEV_API_KEY",
   "OMB_OPENAI_IMAGE_KEY",
   "OMB_CUSTOM_IMAGE_KEY",
+  "OMB_OPENAI_LIVE_KEY",
   "COMPOSIO_API_KEY",
   "OMB_COMPOSIO_BROKER_TOKEN",
   // Cloud Pro's included Boat, voice and decision relay tokens
@@ -1268,7 +1292,7 @@ export function saveConfig(
   // back after we have successfully recognized the legacy list.
   const storedProfiles = storedBrowserProfilesSchema.safeParse(disk.browserProfiles);
   if (storedProfiles.success) disk.browserProfiles = storedProfiles.data;
-  for (const key of ["xai", "anthropic", "mistral", "cerebras", "openai", "openrouter", "openaiCompat", "composio", "box", "opencodeGo", "tts", "decider", "imageGen", "profile", "rooms", "threads", "context", "memory", "localVm", "features", "cloudOverflow", "budgets", "billing", "decisions", "onboarding", "browserEngine", "newBots"] as const) {
+  for (const key of ["xai", "anthropic", "mistral", "cerebras", "openai", "openrouter", "openaiCompat", "composio", "box", "opencodeGo", "tts", "decider", "imageGen", "live", "profile", "rooms", "threads", "context", "memory", "localVm", "features", "cloudOverflow", "budgets", "billing", "decisions", "onboarding", "browserEngine", "newBots"] as const) {
     const section = checkedPatch[key];
     if (!section) continue;
     const current = jsonObjectSchema.safeParse(disk[key]);

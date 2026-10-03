@@ -7,7 +7,7 @@
 // and the one that quietly stopped being true once before.
 import { describe, expect, it } from "vitest";
 
-import { denyReason, isCloudDesktopAccess } from "../src/routes.ts";
+import { denyReason, isCloudDesktopAccess, isCompanionNotice } from "../src/routes.ts";
 
 const ask = (method: string, path: string, authenticated = true) =>
   denyReason({ method, path, authenticated });
@@ -94,6 +94,10 @@ describe("what the app may do", () => {
     ["GET", "/api/tts/voices"],
     ["POST", "/api/tts/prepare"],
     ["POST", "/api/tts/speak"],
+    ["POST", "/api/live/session"],
+    ["POST", "/api/live/call/end"],
+    ["GET", "/api/live/call"],
+    ["PATCH", "/api/live/settings"],
     ["GET", "/api/routines"],
     ["POST", "/api/routines"],
     ["PATCH", "/api/routines/routine_1"],
@@ -167,6 +171,18 @@ describe("what it may not", () => {
     }
     expect(ask("GET", "/api/routines")).toBeNull();
     expect(ask("POST", "/api/routines/routine_1/run")).toBeNull();
+  });
+
+  // The companion tells the harness itself when it unpaired a phone, so the
+  // call that phone holds ends. That notice is the companion's, never a
+  // phone's: no paired device may send it, even about itself.
+  it("keeps the unpaired-phone notice for the companion alone", () => {
+    expect(ask("POST", "/api/live/device-revoked")?.status).toBe(404);
+    expect(ask("POST", "/api/live/device-revoked", false)?.status).toBe(401);
+    expect(isCompanionNotice("POST", "/api/live/device-revoked")).toBe(true);
+    expect(isCompanionNotice("GET", "/api/live/device-revoked")).toBe(false);
+    expect(isCompanionNotice("POST", "/api/live/device-revoked/x")).toBe(false);
+    expect(isCompanionNotice("POST", "/api/live/call/end")).toBe(false);
   });
 
   it("denies the peer-agent endpoints exist at all", () => {
@@ -264,6 +280,18 @@ describe("what it may not", () => {
     ] as Array<[string, string]>) {
       expect(allowed(method, path), `${method} ${path}`).toBe(false);
     }
+  });
+
+  // A phone may start, end and follow a Live call and change its voice and
+  // timing, never the OpenAI key it runs on, and nothing else under /api/live.
+  it("allows only the four Live call routes, never the key", () => {
+    expect(ask("POST", "/api/live/summary")?.status).toBe(404);
+    expect(ask("PUT", "/api/config")?.status).toBe(403);
+    expect(allowed("PUT", "/api/live/settings")).toBe(false);
+    expect(allowed("GET", "/api/live/settings")).toBe(false);
+    expect(allowed("GET", "/api/live/session")).toBe(false);
+    expect(allowed("POST", "/api/live/call")).toBe(false);
+    expect(allowed("POST", "/api/live/call/end/extra")).toBe(false);
   });
 
   it("is not fooled by a prefix", () => {

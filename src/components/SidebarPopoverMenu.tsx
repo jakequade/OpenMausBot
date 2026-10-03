@@ -16,6 +16,10 @@ import { usePopoverDismiss } from "@/hooks/use-popover-dismiss";
 export interface SidebarMenuItem {
   key: string;
   label: string;
+  /** a second, quieter line under the label (where "Connect your phone" connects to) */
+  subtitle?: string;
+  /** a third, quieter line still: a short note (why something is not offered yet) */
+  note?: string;
   icon?: React.ReactNode;
   active?: boolean;
   /** the item wants attention (a failed routine, a downloaded update); a
@@ -182,7 +186,15 @@ export function SidebarPopoverMenu({
                     {item.icon}
                   </span>
                 )}
-                <span className="flex-1 truncate">{item.label}</span>
+                {item.subtitle || item.note ? (
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate">{item.label}</span>
+                    {item.subtitle && <span className="truncate text-[12px] text-ink-secondary">{item.subtitle}</span>}
+                    {item.note && <span className="text-[11.5px] leading-snug text-ink-tertiary">{item.note}</span>}
+                  </span>
+                ) : (
+                  <span className="flex-1 truncate">{item.label}</span>
+                )}
                 {item.trailing}
                 {item.attention && (
                   <span

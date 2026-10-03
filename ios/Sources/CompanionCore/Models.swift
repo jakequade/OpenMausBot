@@ -270,6 +270,9 @@ public struct Message: Codable, Hashable, Identifiable, Sendable {
     public var queueId: String?
     /// Rooms: which member said this.
     public var from: Sender?
+    /// How a user-role message arrived: "api" through the server's HTTP API,
+    /// "call" spoken on a Live call and transcribed. Absent for a typed one.
+    public var via: String?
     public var reactions: [Reaction]?
     public var comm: CommChip?
     /// Screen messages in the paged shape: the pixels live behind
@@ -1141,6 +1144,9 @@ public struct ConfigStatus: Codable, Sendable {
     public var tts: ConfigFlag?
     public var imageGen: ConfigFlag?
     public var profile: Profile?
+    /// Live-call settings on the paired computer. Absent on a computer older
+    /// than Live calls; never carries the key.
+    public var live: LiveSettings?
 
     /// Whether synthesis is available on the paired computer. Deliberately
     /// provider-neutral: under ElevenLabs this is a key on file, while under
@@ -1668,4 +1674,8 @@ extension Message {
             return MessageVoiceNote(path: path, mime: attachment.mime, durationMs: attachment.durationMs)
         }
     }
+
+    /// A request a person spoke on a Live call. Only user lines get the
+    /// label: the bot's answers on a call are ordinary answers.
+    public var isViaCall: Bool { role == .user && via == "call" }
 }

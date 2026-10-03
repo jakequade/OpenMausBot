@@ -53,5 +53,6 @@ for kind in iphone ipad; do
     -only-testing:OpenMausCompanionUITests/TranscriptPresentationUITests \
     -only-testing:OpenMausCompanionUITests/SwipeBackUITests \
     -only-testing:OpenMausCompanionUITests/RosterDensityUITests \
+    -only-testing:OpenMausCompanionUITests/LiveCallUITests \
     CODE_SIGNING_ALLOWED=NO test
 done
