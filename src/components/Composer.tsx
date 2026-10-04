@@ -410,6 +410,13 @@ export function Composer({
   // auto-send intent whenever navigation unmounted the composer.
   const pendingCount = (state.pendingQueued[threadId] ?? []).length;
   const queuedMessages = state.pendingQueued[threadId] ?? [];
+  const [clearedCount, setClearedCount] = useState(0);
+  useEffect(() => setClearedCount(0), [threadId]);
+  useEffect(() => {
+    if (!clearedCount) return;
+    const timeout = window.setTimeout(() => setClearedCount(0), 6000);
+    return () => window.clearTimeout(timeout);
+  }, [clearedCount]);
   const canSteerQueued = composerCanSteerQueuedMessages(
     busy,
     locked,
@@ -630,6 +637,10 @@ export function Composer({
         replyToId: replyTo?.id,
         threadId,
         queueOnly: !steer,
+        clearQueuedOnSteer: steer && busy,
+        onQueueCleared: (count) => {
+          if (draftIdRef.current === sentDraft.draftId) setClearedCount(count);
+        },
         onError: () => restoreDraft(sentDraft),
       });
       track("message_sent", { driver: bot.modelSelection?.instanceId, queued: busy && !steer });
@@ -938,6 +949,9 @@ export function Composer({
           }}
           onEdit={locked ? undefined : editQueued}
         />
+        {clearedCount > 0 && <p role="status" className="px-3 pb-1 text-xs text-ink-secondary">
+          {t("composer.queued.replaced", { count: clearedCount })}
+        </p>}
         <div className="relative">
           {/* App-ground from the pill midline down, full-bleed. Bubbles may
               tuck into the top half of the radius; they must not show below
