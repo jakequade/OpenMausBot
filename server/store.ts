@@ -957,7 +957,7 @@ export class Store {
 
   /** Advance a task's update stamp in memory only. Message writes must not
    * rewrite bots.json; the next snapshot and the startup repair read this. */
-  private noteThreadActivity(threadId: string, at: number, forOrder = false): void {
+  private noteThreadActivity(threadId: string, at: number, forOrder = false, orderAt = at): void {
     if (!Number.isFinite(at)) return;
     const advance = (current: number | undefined) => Math.max(current ?? 0, at);
     for (const bot of this.bots) {
@@ -965,14 +965,14 @@ export class Store {
       if (!task) continue;
       const next = advance(task.updatedAt);
       if (task.updatedAt !== next) task.updatedAt = next;
-      if (forOrder) task.lastThreadOrderAt = advance(task.lastThreadOrderAt);
+      if (forOrder) task.lastThreadOrderAt = Math.max(task.lastThreadOrderAt ?? 0, orderAt);
     }
     for (const group of this.groups) {
       const task = group.tasks?.find((candidate) => candidate.threadId === threadId);
       if (!task) continue;
       const next = advance(task.updatedAt);
       if (task.updatedAt !== next) task.updatedAt = next;
-      if (forOrder) task.lastThreadOrderAt = advance(task.lastThreadOrderAt);
+      if (forOrder) task.lastThreadOrderAt = Math.max(task.lastThreadOrderAt ?? 0, orderAt);
     }
   }
 
@@ -1575,7 +1575,7 @@ export class Store {
     const newest = messages.reduce((max, message) => Math.max(max, message.at), Number.NEGATIVE_INFINITY);
     if (Number.isFinite(newest)) this.noteThreadActivity(threadId, newest);
     const newestOrder = messages.reduce((max, message) => movesThreadToTop(message) ? Math.max(max, message.turnCompletedAt ?? message.at) : max, Number.NEGATIVE_INFINITY);
-    if (Number.isFinite(newestOrder)) this.noteThreadActivity(threadId, newestOrder, true);
+    if (Number.isFinite(newestOrder)) this.noteThreadActivity(threadId, newest, true, newestOrder);
   }
 
   activeLeaf(threadId: string): string | null {
@@ -1626,7 +1626,7 @@ export class Store {
         this.emit({ type: "message.patch", threadId, message: pruned });
       }
     }
-    this.noteThreadActivity(threadId, full.at, movesThreadToTop(full));
+    this.noteThreadActivity(threadId, full.at, movesThreadToTop(full), full.turnCompletedAt ?? full.at);
     this.emit({ type: "message", threadId, message: full });
     // The first-run quiz is not a live ask. Talking past it hides it so the
     // transcript is just the greeting plus what they said. Cards with a
@@ -1656,7 +1656,7 @@ export class Store {
         this.emit({ type: "message.patch", threadId, message: pruned });
       }
     }
-    this.noteThreadActivity(threadId, full.at, movesThreadToTop(full));
+    this.noteThreadActivity(threadId, full.at, movesThreadToTop(full), full.turnCompletedAt ?? full.at);
     this.emit({ type: "message", threadId, message: full });
     // announced after the insert so no client ever sees two siblings
     // claiming the same parent
@@ -1758,7 +1758,7 @@ export class Store {
     const persist = () => { mdb.updateMessage(threadId, next); applied = true; return next; };
     const committed = command ? runCommand(command, persist) : persist();
     if (!applied) return committed;
-    if (!movesThreadToTop(t.messages[idx]) && movesThreadToTop(next)) this.noteThreadActivity(threadId, next.turnCompletedAt ?? next.at, true);
+    if (!movesThreadToTop(t.messages[idx]) && movesThreadToTop(next)) this.noteThreadActivity(threadId, next.at, true, next.turnCompletedAt ?? next.at);
     t.messages[idx] = next;
     this.emit({ type: "message.patch", threadId, message: next });
     return next;

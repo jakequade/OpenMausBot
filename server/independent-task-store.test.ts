@@ -600,6 +600,36 @@ describe("independent bot task state", () => {
     }
   });
 
+  it.each(["bot", "group"])("keeps %s completion time separate from its visible update time", (kind) => {
+    const store = new Store(selection);
+    const bot = store.createBot({}, { seedMessages: false });
+    const group = store.createGroup("Channel", [bot.id], false);
+    const task = kind === "bot" ? store.createTask(bot.id, "Running")! : store.createGroupTask(group.id, "Running")!;
+    const readTask = (current: Store) => kind === "bot" ? current.taskByThread(bot.id, task.threadId) : current.groupTaskByThread(group.id, task.threadId);
+    const at = task.createdAt;
+    store.appendMessage(task.threadId, { role: "bot", kind: "text", text: "Working", turnId: "turn", at: at + 10 });
+    const clock = vi.spyOn(Date, "now").mockReturnValue(at + 30);
+    try {
+      store.markTerminalAssistantMessage(task.threadId, "turn");
+      expect(readTask(store)).toMatchObject({ updatedAt: at + 10, lastThreadOrderAt: at + 30 });
+      expect(readTask(new Store(selection))).toMatchObject({ updatedAt: at + 10, lastThreadOrderAt: at + 30 });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it.each(["bot", "group"])("keeps imported %s completion time separate from its visible update time", (kind) => {
+    const store = new Store(selection);
+    const bot = store.createBot({}, { seedMessages: false });
+    const group = store.createGroup("Channel", [bot.id], false);
+    const task = kind === "bot" ? store.createTask(bot.id, "Imported")! : store.createGroupTask(group.id, "Imported")!;
+    const readTask = (current: Store) => kind === "bot" ? current.taskByThread(bot.id, task.threadId) : current.groupTaskByThread(group.id, task.threadId);
+    const at = task.createdAt;
+    store.importTranscript(task.threadId, [{ id: "reply", role: "bot", kind: "text", text: "Done", at: at + 10, turnId: "turn", turnTerminal: true, turnCompletedAt: at + 30, parentId: null }], "reply");
+    expect(readTask(store)).toMatchObject({ updatedAt: at + 10, lastThreadOrderAt: at + 30 });
+    expect(readTask(new Store(selection))).toMatchObject({ updatedAt: at + 10, lastThreadOrderAt: at + 30 });
+  });
+
   it("tracks completed replies and person messages for thread ordering across restarts", () => {
     const store = new Store(selection);
     const bot = store.createBot({}, { seedMessages: false });
