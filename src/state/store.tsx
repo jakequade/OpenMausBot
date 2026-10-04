@@ -1914,13 +1914,18 @@ export function reducer(state: AppState, action: Action): AppState {
     }
     case "optimisticMessageRemoved": {
       const id = optimisticMessageId(action.sendId);
+      const remove = (messages: Message[], optimistic: Message) => messages
+        .filter((message) => message.id !== id)
+        .map((message) => message.optimisticThreadOrderAt === optimistic.at
+          ? { ...message, optimisticThreadOrderAt: optimistic.optimisticThreadOrderAt }
+          : message);
       const bot = state.bots.find((candidate) => candidate.threadId === action.threadId);
       if (bot) {
         const optimistic = bot.messages.find((message) => message.id === id);
         if (!optimistic) return state;
         const cleared = updateBot(state, bot.id, (current) => ({
           ...current,
-          messages: current.messages.filter((message) => message.id !== id),
+          messages: remove(current.messages, optimistic),
           activeLeafId: current.activeLeafId === id
             ? (action.restoreLeafId !== undefined ? action.restoreLeafId : (optimistic.parentId ?? null))
             : current.activeLeafId,
@@ -1935,7 +1940,7 @@ export function reducer(state: AppState, action: Action): AppState {
       const cleared = {
         ...state,
         groups: state.groups.map((candidate) => candidate.id === group.id
-          ? { ...candidate, messages: candidate.messages.filter((message) => message.id !== id) }
+          ? { ...candidate, messages: remove(candidate.messages, optimistic) }
           : candidate),
       };
       const task = group.tasks?.find((candidate) => candidate.threadId === action.threadId);

@@ -1976,6 +1976,52 @@ describe("messageAdded leaf adoption", () => {
 });
 
 describe("thread ordering stamps", () => {
+  it.each(["bot", "group"] as const)("restores overlapping %s sends in every failure order", owner => {
+    const orders = [[0, 1], [1, 0], [0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+    const clock = vi.spyOn(Date, "now");
+    try {
+      for (const order of orders) {
+        const task = { threadId: "first", createdAt: 1, lastThreadOrderAt: 25 };
+        const bot = { id: "b", threadId: "first", messages: [], hasMore: true, tasks: [task] } as never as Bot;
+        const group = { id: "g", threadId: "first", createdAt: 1, messages: [], hasMore: true, tasks: [task] } as never as Group;
+        let state = { ...initialState, bots: owner === "bot" ? [bot] : [], groups: owner === "group" ? [group] : [] };
+        for (let i = 0; i < order.length; i++) {
+          clock.mockReturnValue(100 + i * 10);
+          state = reducer(state, owner === "bot"
+            ? { type: "send", botId: "b", text: "Pending", sendId: String(i) }
+            : { type: "sendGroup", groupId: "g", text: "Pending", sendId: String(i) });
+        }
+        for (const i of order) state = reducer(state, { type: "optimisticMessageRemoved", threadId: "first", sendId: String(i) });
+        const result = owner === "bot" ? state.bots[0] : state.groups[0];
+        expect(result.messages, `${owner}: ${order}`).toEqual([]);
+        expect(result.tasks?.[0]?.lastThreadOrderAt, `${owner}: ${order}`).toBe(25);
+      }
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it.each(["accepted-send", "completed-reply"] as const)("retains %s while another optimistic send rolls back", event => {
+    const bot = { id: "b", threadId: "first", messages: [], hasMore: true, tasks: [
+      { threadId: "first", createdAt: 1, lastThreadOrderAt: 25 },
+    ] } as never as Bot;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(100);
+    try {
+      let state = reducer({ ...initialState, bots: [bot] }, { type: "send", botId: "b", text: "First", sendId: "first" });
+      clock.mockReturnValue(110);
+      state = reducer(state, { type: "send", botId: "b", text: "Second", sendId: "second" });
+      const message: Message = event === "accepted-send"
+        ? { id: "accepted", at: 120, role: "user", kind: "text", sendId: "first", parentId: null }
+        : { id: "reply", at: 80, role: "bot", kind: "text", turnId: "turn", turnTerminal: true, turnCompletedAt: 120 };
+      state = reducer(state, { type: "messageAdded", threadId: "first", message });
+      state = reducer(state, { type: "optimisticMessageRemoved", threadId: "first", sendId: "first" });
+      state = reducer(state, { type: "optimisticMessageRemoved", threadId: "first", sendId: "second" });
+      expect(state.bots[0].messages.map(row => row.id)).toEqual([message.id]);
+      expect(state.bots[0].tasks?.[0]?.lastThreadOrderAt).toBe(120);
+    } finally {
+      clock.mockRestore();
+    }
+  });
   it.each(["first", "second"])("orders terminal completion in active and background threads: %s", threadId => {
     const bot = { id: "b", threadId: "first", messages: [], tasks: [
       { threadId: "first", createdAt: 1, lastThreadOrderAt: 25 },
