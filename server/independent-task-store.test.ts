@@ -610,9 +610,14 @@ describe("independent bot task state", () => {
     expect(store.taskByThread(bot.id, task.threadId)?.lastThreadOrderAt).toBeUndefined();
     const reply = store.appendMessage(task.threadId, { role: "bot", kind: "text", text: "Working", turnId: "turn-1", at: at + 25 });
     expect(store.taskByThread(bot.id, task.threadId)?.lastThreadOrderAt).toBeUndefined();
-    store.patchMessage(task.threadId, reply.id, { turnTerminal: true });
-    expect(store.taskByThread(bot.id, task.threadId)?.lastThreadOrderAt).toBe(at + 25);
-    expect(new Store(selection).taskByThread(bot.id, task.threadId)?.lastThreadOrderAt).toBe(at + 25);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(at + 26);
+    try {
+      expect(store.markTerminalAssistantMessage(task.threadId, "turn-1")?.at).toBe(reply.at);
+      expect(store.taskByThread(bot.id, task.threadId)?.lastThreadOrderAt).toBe(at + 26);
+      expect(new Store(selection).taskByThread(bot.id, task.threadId)?.lastThreadOrderAt).toBe(at + 26);
+    } finally {
+      clock.mockRestore();
+    }
     store.appendMessage(task.threadId, { role: "user", kind: "text", text: "Hello", at: at + 30 });
     store.appendMessage(task.threadId, { role: "bot", kind: "activity", text: "Working", at: at + 40 });
     expect(store.taskByThread(bot.id, task.threadId)).toMatchObject({ lastThreadOrderAt: at + 30, updatedAt: at + 40 });

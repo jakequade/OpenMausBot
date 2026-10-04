@@ -362,6 +362,15 @@ describe("orderedThreadList", () => {
     ]);
     expect(ordered.map((item) => item.threadId)).toEqual(["user-active", "bot-active"]);
   });
+
+  it("orders a reply completed at 120 above a person message at 110, retaining its display time of 100", () => {
+    const ordered = orderedThreadList([
+      task("person", { updatedAt: 110, lastThreadOrderAt: 110 }),
+      task("reply", { updatedAt: 100, lastThreadOrderAt: 120 }),
+    ]);
+    expect(ordered.map((item) => item.threadId)).toEqual(["reply", "person"]);
+    expect(ordered[0]).toMatchObject({ updatedAt: 100 });
+  });
 });
 
 describe("orderedSidebarThreads", () => {
