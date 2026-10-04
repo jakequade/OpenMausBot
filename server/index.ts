@@ -8912,7 +8912,7 @@ async function acceptDirectSend(
           pendingComputerSelection: Boolean(computerSelectionTurns.get(threadId)?.selected),
           engineCanSteer: Boolean(instance?.adapter.capabilities.queueing && instance.adapter.steer),
         });
-        const held = clearQueuedOnSteer && busyAdmission.action === "steer"
+        let held = clearQueuedOnSteer && busyAdmission.action === "steer"
           ? holdSteeredQueue(botId, threadId)
           : null;
         let cleared = false;
@@ -8970,6 +8970,11 @@ async function acceptDirectSend(
               ...(held ? { clearedQueueIds: held.items.map((item) => item.messageId) } : {}) };
           }
           if (!current.busy) {
+            if (held) {
+              restoreHeldSteeredQueue(held);
+              held = null;
+              drainQueuedSends();
+            }
             return startOrQueueDirectMessage(botId, threadId, text, replyTo, sendId, sender, trigger, via);
           }
           const queued = queueSteeredMessage(current.id, threadId, text, {
@@ -8982,7 +8987,11 @@ async function acceptDirectSend(
           });
           return { ok: true as const, queued: true as const, queueId: queued.id, threadId };
         } finally {
-          if (held && !cleared) restoreHeldSteeredQueue(held);
+          if (held && !cleared) {
+            restoreHeldSteeredQueue(held);
+            const after = store.projectBotForTask(botId, threadId);
+            if (!after?.busy) drainQueuedSends();
+          }
         }
       }
       return startOrQueueDirectMessage(botId, threadId, text, replyTo, sendId, sender, trigger, via);

@@ -489,6 +489,27 @@ posixOnly("mid-turn steering e2e", () => {
     expect(rejected.body.error).toMatch(/no such bot/i);
   }, 40_000);
 
+  it("drains a held queue when the turn ends before steer acknowledgement", async () => {
+    rmSync(steerGate, { force: true });
+    const created = (await api("POST", "/api/bots")).body.bot;
+    await api("PATCH", `/api/bots/${created.id}`, { modelSelection: { instanceId: "claudeRace", model: "claude-fake" } });
+    expect((await api("POST", `/api/bots/${created.id}/messages`, { text: "first race turn" })).status).toBe(202);
+    await waitFor(async () => (await getBot(created.id))?.messages.some((message: any) => message.kind === "activity"), "the race turn tool chip");
+    const queued = await api("POST", `/api/bots/${created.id}/messages`, { text: "old queued task", queueOnly: true });
+    expect(queued.body.queued).toBe(true);
+    const delayed = api("POST", `/api/bots/${created.id}/messages`, {
+      text: `new direction ${"x".repeat(900_000)}`,
+      threadId: created.threadId,
+      clearQueuedOnSteer: true,
+    });
+    expect(await Promise.race([delayed.then(() => true), new Promise<false>((resolve) => setTimeout(() => resolve(false), 100))])).toBe(false);
+    await waitFor(async () => (await getBot(created.id))?.busy === false, "the original turn to settle");
+    writeFileSync(steerGate, "open");
+    await delayed;
+    await waitFor(async () => (await getBot(created.id))?.messages.some((message: any) => message.text === "old queued task"), "the held queue to drain");
+    await api("POST", `/api/bots/${created.id}/interrupt`);
+  }, 40_000);
+
   it("an engine without a live session preserves the message in the server-side queue", async () => {
     const created = (await api("POST", "/api/bots")).body.bot;
     await api("PATCH", `/api/bots/${created.id}`, { modelSelection: { instanceId: "acp", model: "fake-model" } });
