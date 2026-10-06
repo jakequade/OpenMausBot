@@ -1177,6 +1177,11 @@ public struct Instance: Codable, Hashable, Identifiable, Sendable {
     public var capabilities: InstanceCapabilities? = nil
 
     public var id: String { instanceId }
+    public var offersSignIn: Bool {
+        snapshot.isAvailable && snapshot.authenticated == false && install != nil &&
+        snapshot.authenticationUnavailableReason == nil && install?.settings != "connections" &&
+        !(access == "api" && (driverKind != "claudeAgent" || snapshot.version != nil))
+    }
 }
 
 public struct InstanceInstall: Codable, Hashable, Sendable {

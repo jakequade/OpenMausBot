@@ -1053,13 +1053,13 @@ class Session(
         if (streamGeneration != generation || client !== activeClient || instanceLookup.get() != lookup) return
         _instances.value = engines
         _steeringInstanceIds.value = engines.filter { it.capabilities?.queueing == true }.map { it.instanceId }.toSet()
-        if (engines.any { it.snapshot.isAvailable && it.snapshot.authenticated == false }) {
+        if (engines.any(Instance::offersSignIn)) {
             if (instancePollJob?.isActive != true) {
                 instancePollJob = scope.launch {
                     while (isActive) {
                         delay(30_000)
                         refreshInstances(activeClient, generation)
-                        if (_instances.value.none { it.snapshot.isAvailable && it.snapshot.authenticated == false }) break
+                        if (_instances.value.none(Instance::offersSignIn)) break
                     }
                 }
             }

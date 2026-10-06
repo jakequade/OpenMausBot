@@ -180,7 +180,7 @@ fun RosterScreen(navigator: CompanionNavigator) {
     // state and the activity level alone: typing filters the fold instead of
     // repeating it.
     val baseSummaries = remember(state, activityDetail) { state.chatSummaries(activityDetail) }
-    val summaries = if (instances.none { it.snapshot.isAvailable && it.snapshot.authenticated == false }) baseSummaries else baseSummaries.map { summary ->
+    val summaries = if (instances.none { it.offersSignIn }) baseSummaries else baseSummaries.map { summary ->
         val last = transcriptRows(
             state.visibleTranscript(summary.chat.threadId).filter { it.kind != Message.Kind.DIGEST }, activityDetail,
         ).lastOrNull()

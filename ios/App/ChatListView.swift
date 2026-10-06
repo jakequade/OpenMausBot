@@ -813,7 +813,7 @@ struct ChatListView: View {
             return all
         }
         previewCache.keepOnly(Set(all.map(\.chat.threadId)))
-        let hasSignedOutEngine = session.instances.contains { $0.snapshot.isAvailable && $0.snapshot.authenticated == false }
+        let hasSignedOutEngine = session.instances.contains(where: \.offersSignIn)
         return all.map { summary in
             let preview = previewCache.preview(forThread: summary.chat.threadId, in: state, detail: activity)
             guard hasSignedOutEngine else {

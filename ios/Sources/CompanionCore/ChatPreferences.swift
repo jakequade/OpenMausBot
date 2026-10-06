@@ -237,10 +237,7 @@ public func signedOutEngine(for chat: Chat, message: Message, in state: Companio
     }
     guard let bot,
           let engine = instances.first(where: { $0.instanceId == bot.currentTaskModelSelection.instanceId }),
-          engine.snapshot.isAvailable, engine.snapshot.authenticated == false,
-          engine.install != nil, engine.snapshot.authenticationUnavailableReason == nil,
-          engine.install?.settings != "connections",
-          !(engine.access == "api" && (engine.driverKind != "claudeAgent" || engine.snapshot.version != nil)) else { return nil }
+          engine.offersSignIn else { return nil }
     return engine
 }
 

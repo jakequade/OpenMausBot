@@ -197,12 +197,7 @@ fun signedOutEngine(chat: Chat, message: Message, state: CompanionState, instanc
         is Chat.BotChat -> chat.bot.forTask(chat.threadId) ?: chat.bot
         is Chat.RoomChat -> message.from?.botId?.let(state::bot)
     } ?: return null
-    return instances.firstOrNull {
-        it.instanceId == bot.modelSelection.instanceId && it.snapshot.isAvailable && it.snapshot.authenticated == false &&
-            it.install != null && it.snapshot.authenticationUnavailableReason == null &&
-            it.install.settings != "connections" &&
-            !(it.access == "api" && (it.driverKind != "claudeAgent" || it.snapshot.version != null))
-    }
+    return instances.firstOrNull { it.instanceId == bot.modelSelection.instanceId && it.offersSignIn }
 }
 
 /** What the chip and the roster say: a failed turn's cause, or the step. */

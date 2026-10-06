@@ -1172,14 +1172,14 @@ final class Session: ObservableObject {
               self.client?.connection.id == client.connection.id else { return }
         instances = engines
         steeringInstanceIds = Set(engines.filter { $0.capabilities?.queueing == true }.map(\.instanceId))
-        if engines.contains(where: { $0.snapshot.isAvailable && $0.snapshot.authenticated == false }) {
+        if engines.contains(where: \.offersSignIn) {
             if instancePollTask == nil {
                 instancePollTask = Task { [weak self] in
                     while !Task.isCancelled {
                         try? await Task.sleep(for: .seconds(30))
                         guard !Task.isCancelled, let self else { break }
                         await self.refreshInstances(using: client)
-                        if !self.instances.contains(where: { $0.snapshot.isAvailable && $0.snapshot.authenticated == false }) { break }
+                        if !self.instances.contains(where: \.offersSignIn) { break }
                     }
                     self?.instancePollTask = nil
                 }

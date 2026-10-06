@@ -790,6 +790,9 @@ data class Instance(
     val capabilities: InstanceCapabilities? = null,
 ) {
     val id: String get() = instanceId
+    val offersSignIn: Boolean get() = snapshot.isAvailable && snapshot.authenticated == false && install != null &&
+        snapshot.authenticationUnavailableReason == null && install.settings != "connections" &&
+        !(access == "api" && (driverKind != "claudeAgent" || snapshot.version != null))
 }
 
 @Serializable
