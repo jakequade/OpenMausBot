@@ -814,9 +814,16 @@ struct ChatListView: View {
         }
         previewCache.keepOnly(Set(all.map(\.chat.threadId)))
         return all.map { summary in
+            let preview = previewCache.preview(forThread: summary.chat.threadId, in: state, detail: activity)
+            let last = state.visibleTranscript(forThread: summary.chat.threadId).last { $0.kind != .digest }
+            let signedOut = last.flatMap {
+                preview == $0.tool?.label
+                    ? signedOutEngine(for: summary.chat, message: $0, in: state, instances: session.instances)
+                    : nil
+            }
             ChatSummary(
                 chat: summary.chat,
-                preview: previewCache.preview(forThread: summary.chat.threadId, in: state, detail: activity),
+                preview: signedOut.map { signedOutCopy($0, preview: true) } ?? preview,
                 lastActivity: summary.lastActivity,
                 pinned: summary.pinned
             )

@@ -762,6 +762,7 @@ data class ProviderSnapshot(
     val state: String,
     val reason: String? = null,
     val authenticated: Boolean? = null,
+    val authenticationUnavailableReason: String? = null,
     val version: String? = null,
 ) {
     val isAvailable: Boolean get() = state == "available"
@@ -782,12 +783,17 @@ data class Instance(
     val driverKind: String,
     val displayName: String? = null,
     val snapshot: ProviderSnapshot,
+    val access: String? = null,
+    val install: InstanceInstall? = null,
     val models: ModelCatalog,
     /** Older computers omit capabilities; omission is intentionally not permission. */
     val capabilities: InstanceCapabilities? = null,
 ) {
     val id: String get() = instanceId
 }
+
+@Serializable
+data class InstanceInstall(val settings: String? = null)
 
 /**
  * The small, phone-safe part of an engine's capabilities. Missing capabilities

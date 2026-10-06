@@ -103,6 +103,7 @@ import com.openmausbot.companion.core.ThreadRef
 import com.openmausbot.companion.core.ToolActivity
 import com.openmausbot.companion.core.forTask
 import com.openmausbot.companion.core.label
+import com.openmausbot.companion.core.signedOutEngine
 import com.openmausbot.companion.core.routineExecutionRef
 import com.openmausbot.companion.core.TranscriptCard
 import com.openmausbot.companion.core.TranscriptCards
@@ -148,6 +149,7 @@ fun MessageRow(
     val scope = rememberCoroutineScope()
     val haptics = rememberHaptics()
     val state by session.state.collectAsState()
+    val instances by session.instances.collectAsState()
     val clipboard = LocalClipboard.current
     var menuOpen by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf(false) }
@@ -187,6 +189,8 @@ fun MessageRow(
             MessageContent(
                 chat = chat,
                 message = message,
+                state = state,
+                instances = instances,
                 endsRun = endsRun,
                 haptics = haptics,
                 openLink = openLink,
@@ -433,6 +437,8 @@ private fun SelectableTextDialog(text: String, onDismiss: () -> Unit) {
 private fun MessageContent(
     chat: Chat,
     message: Message,
+    state: com.openmausbot.companion.core.CompanionState,
+    instances: List<com.openmausbot.companion.core.Instance>,
     endsRun: Boolean,
     haptics: Haptics,
     openLink: ((String, Message) -> Unit)?,
@@ -450,7 +456,11 @@ private fun MessageContent(
             CardView(chat, message, haptics)
         }
         Message.Kind.ACTIVITY -> {
-            ActivityChip(message.tool, message.threadRef, openThread, teammateReport = message.threadRef != null || message.comm != null)
+            ActivityChip(
+                message.tool, message.threadRef, openThread,
+                teammateReport = message.threadRef != null || message.comm != null,
+                label = signedOutEngine(chat, message, state, instances)?.let { signedOutCopy(it) },
+            )
             // Claude Code too old for the model: offer the update on the
             // engine this bot's thread runs on. Rooms have no single engine.
             val claudeInstance = (chat as? Chat.BotChat)?.bot
@@ -1042,8 +1052,10 @@ private fun ActivityChip(
      * then does [ToolActivity.output] show: an ordinary tool chip carries raw
      * output too, and that log stays on the computer's side. */
     teammateReport: Boolean = false,
+    label: String? = null,
 ) {
     if (tool == null) return
+    val visibleLabel = label ?: tool.label
     val status = ActivityReceipt.status(tool.ok)
     val tint = when (status) {
         ActivityStatus.RUNNING -> MaterialTheme.colorScheme.tertiary
@@ -1067,7 +1079,7 @@ private fun ActivityChip(
                 .padding(start = 4.dp)
                 .then(linked)
                 .semantics(mergeDescendants = true) {
-                    contentDescription = ActivityReceipt.announcement(tool.label, status)
+                    contentDescription = ActivityReceipt.announcement(visibleLabel, status)
                 },
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -1087,7 +1099,7 @@ private fun ActivityChip(
                 )
             }
             Text(
-                text = tool.label,
+                text = visibleLabel,
                 fontSize = 13.sp,
                 maxLines = ActivityReceipt.nameLines(status),
                 color = if (status == ActivityStatus.ERROR) tint else secondaryTint,

@@ -19,6 +19,14 @@ import ImageIO
 import UIKit
 import AVFoundation
 
+func signedOutCopy(_ engine: Instance, preview: Bool = false) -> String {
+    let name = engine.displayName ?? engine.instanceId
+    let format = preview
+        ? String(localized: "%@ isn't signed in")
+        : String(localized: "%@ isn't signed in on your computer. Sign in there under Settings → Engines, then send again.")
+    return String(format: format, locale: .current, name)
+}
+
 struct ChatView: View {
     let chat: Chat
     @State private var selectedThreadId: String
@@ -1891,7 +1899,9 @@ struct MessageRow: View {
         case .activity:
             ActivityChip(
                 tool: message.tool, threadRef: message.threadRef, openThread: openThread,
-                outputIsProse: message.isTeammateReport
+                outputIsProse: message.isTeammateReport,
+                label: signedOutEngine(for: chat, message: message, in: session.state, instances: session.instances)
+                    .map { signedOutCopy($0) }
             )
             // A turn that failed because Claude Code is too old for the
             // model: offer to run the updater for the engine this thread uses.
@@ -2107,6 +2117,7 @@ struct ActivityChip: View {
     var openThread: ((ThreadRef) -> Void)? = nil
     /// The output is a teammate's report, not a tool log.
     var outputIsProse = false
+    var label: String? = nil
 
     var body: some View {
         if let tool {
@@ -2114,7 +2125,7 @@ struct ActivityChip: View {
             // carry raw output, and that log stays on the computer's side.
             let output = outputIsProse ? tool.expandableOutput : nil
             let receipt = SkillExecutionReceiptView(
-                skillName: tool.label,
+                skillName: label ?? tool.label,
                 status: tool.ok.map { $0 ? "success" : "error" } ?? "running",
                 output: output ?? "",
                 outputIsProse: outputIsProse
@@ -2153,7 +2164,7 @@ struct ActivityChip: View {
                     receipt.allowsHitTesting(false)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(tool.label)
+                .accessibilityLabel(label ?? tool.label)
                 .accessibilityHint("Opens the thread")
             } else {
                 receipt

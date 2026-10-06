@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="mobile_engine_signed_out_preview">%1$s 尚未登入</string>
+    <string name="mobile_engine_signed_out">%1$s 尚未在你的電腦上登入。請在電腦的「設定 → 引擎」中登入，然後重新傳送。</string>
     <string name="notification_channel_blocking">核准與問題</string>
     <string name="notification_channel_blocking_desc">需要及時回覆的提示</string>
     <string name="notification_channel_done">機器人訊息</string>

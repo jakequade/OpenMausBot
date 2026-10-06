@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="mobile_engine_signed_out_preview">%1$s 尚未登录</string>
+    <string name="mobile_engine_signed_out">%1$s 尚未在你的电脑上登录。请在电脑上的“设置 → 引擎”中登录，然后重新发送。</string>
     <string name="notification_channel_blocking">审批与问题</string>
     <string name="notification_channel_blocking_desc">需要及时回复的提示</string>
     <string name="notification_channel_done">机器人消息</string>

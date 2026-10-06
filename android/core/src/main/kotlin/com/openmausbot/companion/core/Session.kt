@@ -2,6 +2,7 @@ package com.openmausbot.companion.core
 
 import java.net.URI
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -105,6 +106,10 @@ class Session(
      */
     private val _steeringInstanceIds = MutableStateFlow<Set<String>>(emptySet())
     val steeringInstanceIds: StateFlow<Set<String>> = _steeringInstanceIds.asStateFlow()
+    private val _instances = MutableStateFlow<List<Instance>>(emptyList())
+    val instances: StateFlow<List<Instance>> = _instances.asStateFlow()
+    private val instanceLookup = AtomicInteger()
+    private var instancePollJob: Job? = null
 
     private val _connection = MutableStateFlow<Connection?>(null)
     val connection: StateFlow<Connection?> = _connection.asStateFlow()
@@ -658,6 +663,11 @@ class Session(
         token = null
         rotation = CandidateRotation(emptyList())
         _state.value = CompanionState()
+        _instances.value = emptyList()
+        _steeringInstanceIds.value = emptySet()
+        instanceLookup.incrementAndGet()
+        instancePollJob?.cancel()
+        instancePollJob = null
         notificationSink.setBadge(0)
     }
 
@@ -907,6 +917,9 @@ class Session(
 
     /** Called when the app leaves the screen — deliberate disconnect so the cursor is known. */
     fun disconnect() {
+        instanceLookup.incrementAndGet()
+        instancePollJob?.cancel()
+        instancePollJob = null
         streamJob?.cancel()
         streamJob = null
         endpointRefreshJob?.cancel()
@@ -945,6 +958,8 @@ class Session(
                                 if (!payload.resumed) {
                                     hydrate(generation)
                                     _state.update { it.resetCursor(payload.cursor) }
+                                } else {
+                                    scope.launch { refreshInstances(activeClient, generation) }
                                 }
                                 _status.value = Status.Live
                                 promoteWorkingRoute()
@@ -956,6 +971,9 @@ class Session(
                                 reconnectDelaySeconds = 0
                                 framesAfterHello += 1
                                 _state.update { it.apply(frame) }
+                                if (payload is Frame.Message && isFailedTurn(payload.message)) {
+                                    scope.launch { refreshInstances(activeClient, generation) }
+                                }
                                 if (payload is Frame.Notify) {
                                     notificationSink.deliver(payload.notification, frame.seq)
                                 }
@@ -998,18 +1016,7 @@ class Session(
         // must not wait on a request that says nothing about the transcript.
         // An older harness omits the flag and every engine reads as
         // non-steering, which is the conservative wording.
-        scope.launch {
-            _steeringInstanceIds.value = try {
-                instancesFn(activeClient)
-                    .filter { it.capabilities?.queueing == true }
-                    .map { it.instanceId }
-                    .toSet()
-            } catch (error: CancellationException) {
-                throw error
-            } catch (_: Exception) {
-                emptySet()
-            }
-        }
+        scope.launch { refreshInstances(activeClient, generation) }
         // The fleet snapshot does not carry the Live call. A phone that
         // reconnects mid-call reads it here; one that reconnects after the
         // computer restarted learns the call is gone the same way. An older
@@ -1031,6 +1038,34 @@ class Session(
             gate.withLock {
                 if (streamGeneration == generation) _state.update { it.applyLiveCallLookup(call, readAt) }
             }
+        }
+    }
+
+    private suspend fun refreshInstances(activeClient: CompanionClient, generation: Int) {
+        val lookup = instanceLookup.incrementAndGet()
+        val engines = try {
+            instancesFn(activeClient)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            return
+        }
+        if (streamGeneration != generation || client !== activeClient || instanceLookup.get() != lookup) return
+        _instances.value = engines
+        _steeringInstanceIds.value = engines.filter { it.capabilities?.queueing == true }.map { it.instanceId }.toSet()
+        if (engines.any { it.snapshot.isAvailable && it.snapshot.authenticated == false }) {
+            if (instancePollJob?.isActive != true) {
+                instancePollJob = scope.launch {
+                    while (isActive) {
+                        delay(30_000)
+                        refreshInstances(activeClient, generation)
+                        if (_instances.value.none { it.snapshot.isAvailable && it.snapshot.authenticated == false }) break
+                    }
+                }
+            }
+        } else {
+            instancePollJob?.cancel()
+            instancePollJob = null
         }
     }
 

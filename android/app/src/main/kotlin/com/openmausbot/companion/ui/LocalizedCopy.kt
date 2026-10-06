@@ -3,6 +3,13 @@ package com.openmausbot.companion.ui
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.stringResource
 import com.openmausbot.companion.R
+import com.openmausbot.companion.core.Instance
+
+@Composable
+internal fun signedOutCopy(engine: Instance, preview: Boolean = false): String = stringResource(
+    if (preview) R.string.mobile_engine_signed_out_preview else R.string.mobile_engine_signed_out,
+    engine.displayName ?: engine.instanceId,
+)
 
 /** Translates fixed English copy returned by UI policy helpers. */
 private val localizedCopyResources = mapOf(

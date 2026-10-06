@@ -81,6 +81,7 @@ import com.openmausbot.companion.R
 import com.openmausbot.companion.core.Bot
 import com.openmausbot.companion.core.Chat
 import com.openmausbot.companion.core.ChatSummary
+import com.openmausbot.companion.core.Message
 import com.openmausbot.companion.core.Room
 import com.openmausbot.companion.core.RosterDensity
 import com.openmausbot.companion.core.SearchHit
@@ -88,6 +89,9 @@ import com.openmausbot.companion.core.Session
 import com.openmausbot.companion.core.chat
 import com.openmausbot.companion.core.chatSummaries
 import com.openmausbot.companion.core.forTask
+import com.openmausbot.companion.core.isFailedTurn
+import com.openmausbot.companion.core.label
+import com.openmausbot.companion.core.signedOutEngine
 import java.util.Locale
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -121,6 +125,7 @@ fun RosterScreen(navigator: CompanionNavigator) {
     val scope = rememberCoroutineScope()
     val haptics = rememberHaptics()
     val state by session.state.collectAsState()
+    val instances by session.instances.collectAsState()
     val connection by session.connection.collectAsState()
     val status by session.status.collectAsState()
     // The same preference the transcript folds by, from the same store: a reader
@@ -172,7 +177,13 @@ fun RosterScreen(navigator: CompanionNavigator) {
     // Folding the fleet walks every thread's transcript, so it is keyed on the
     // state and the activity level alone: typing filters the fold instead of
     // repeating it.
-    val summaries = remember(state, activityDetail) { state.chatSummaries(activityDetail) }
+    val baseSummaries = remember(state, activityDetail) { state.chatSummaries(activityDetail) }
+    val summaries = baseSummaries.map { summary ->
+        val last = state.visibleTranscript(summary.chat.threadId).lastOrNull { it.kind != Message.Kind.DIGEST }
+        val engine = last?.takeIf { isFailedTurn(it) && summary.preview == it.tool?.label }
+            ?.let { signedOutEngine(summary.chat, it, state, instances) }
+        if (engine == null) summary else summary.copy(preview = signedOutCopy(engine, preview = true))
+    }
     // Only a search has rows to filter; the unsearched roster is assembled
     // section by section below.
     val rows = remember(summaries, query, state.queuedThreadIds) {

@@ -190,6 +190,21 @@ fun failedTurnCause(name: String): String? =
 fun isFailedTurn(message: Message): Boolean =
     message.kind == Message.Kind.ACTIVITY && message.tool?.let { failedTurnCause(it.name) } != null
 
+fun signedOutEngine(chat: Chat, message: Message, state: CompanionState, instances: List<Instance>): Instance? {
+    val tool = message.tool ?: return null
+    if (!isFailedTurn(message) || tool.setup != true || tool.claudeUpdate == true) return null
+    val bot = when (chat) {
+        is Chat.BotChat -> chat.bot.forTask(chat.threadId) ?: chat.bot
+        is Chat.RoomChat -> message.from?.botId?.let(state::bot)
+    } ?: return null
+    return instances.firstOrNull {
+        it.instanceId == bot.modelSelection.instanceId && it.snapshot.isAvailable && it.snapshot.authenticated == false &&
+            it.install != null && it.snapshot.authenticationUnavailableReason == null &&
+            it.install.settings != "connections" &&
+            !(it.access == "api" && (it.driverKind != "claudeAgent" || it.snapshot.version != null))
+    }
+}
+
 /** What the chip and the roster say: a failed turn's cause, or the step. */
 val ToolActivity.label: String get() = failedTurnCause(name) ?: name
 

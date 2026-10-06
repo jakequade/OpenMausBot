@@ -1,6 +1,20 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "%@ isn't signed in": {
+      "localizations": {
+        "pt-BR": { "stringUnit": { "state": "translated", "value": "%@ não está conectado" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "%@ 尚未登录" } },
+        "zh-Hant": { "stringUnit": { "state": "translated", "value": "%@ 尚未登入" } }
+      }
+    },
+    "%@ isn't signed in on your computer. Sign in there under Settings → Engines, then send again.": {
+      "localizations": {
+        "pt-BR": { "stringUnit": { "state": "translated", "value": "%@ não está conectado no seu computador. Entre em Configurações → Mecanismos e envie a mensagem novamente." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "%@ 尚未在你的电脑上登录。请在电脑上的“设置 → 引擎”中登录，然后重新发送。" } },
+        "zh-Hant": { "stringUnit": { "state": "translated", "value": "%@ 尚未在你的電腦上登入。請在電腦的「設定 → 引擎」中登入，然後重新傳送。" } }
+      }
+    },
     "List density": {
       "localizations": {
         "pt-BR": {

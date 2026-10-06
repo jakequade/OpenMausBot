@@ -1137,6 +1137,7 @@ public struct ProviderSnapshot: Codable, Hashable, Sendable {
     public var state: String
     public var reason: String?
     public var authenticated: Bool?
+    public var authenticationUnavailableReason: String?
     public var version: String?
 
     public var isAvailable: Bool { state == "available" }
@@ -1170,10 +1171,16 @@ public struct Instance: Codable, Hashable, Identifiable, Sendable {
     public var driverKind: String
     public var displayName: String?
     public var snapshot: ProviderSnapshot
+    public var access: String?
+    public var install: InstanceInstall?
     public var models: ModelCatalog
     public var capabilities: InstanceCapabilities? = nil
 
     public var id: String { instanceId }
+}
+
+public struct InstanceInstall: Codable, Hashable, Sendable {
+    public var settings: String?
 }
 
 public struct InstanceList: Codable, Sendable {

@@ -228,6 +228,22 @@ public func isFailedTurn(_ message: Message) -> Bool {
     message.kind == .activity && message.tool.flatMap { failedTurnCause($0.name) } != nil
 }
 
+public func signedOutEngine(for chat: Chat, message: Message, in state: CompanionState, instances: [Instance]) -> Instance? {
+    guard isFailedTurn(message), let tool = message.tool, tool.setup == true, tool.claudeUpdate != true else { return nil }
+    let bot: Bot?
+    switch chat {
+    case let .bot(owner): bot = owner
+    case .room: bot = message.from.flatMap { state.bot($0.botId) }
+    }
+    guard let bot,
+          let engine = instances.first(where: { $0.instanceId == bot.currentTaskModelSelection.instanceId }),
+          engine.snapshot.isAvailable, engine.snapshot.authenticated == false,
+          engine.install != nil, engine.snapshot.authenticationUnavailableReason == nil,
+          engine.install?.settings != "connections",
+          !(engine.access == "api" && (engine.driverKind != "claudeAgent" || engine.snapshot.version != nil)) else { return nil }
+    return engine
+}
+
 extension ToolActivity {
     /// What the chip and the roster say: a failed turn's cause, or the step.
     public var label: String { failedTurnCause(name) ?? name }

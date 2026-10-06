@@ -72,6 +72,7 @@ final class Session: ObservableObject {
     /// used while notification settings are still loading at launch.
     @Published private(set) var notificationAuthorizationResolved = false
     @Published private(set) var steeringInstanceIds: Set<String> = []
+    @Published private(set) var instances: [Instance] = []
     /// A short-lived desktop handoff waiting for PairingView to present it.
     @Published private(set) var pairingInvite: PairingInvite?
     /// Why the last pairing link could not be used. PairingView shows it
@@ -124,6 +125,8 @@ final class Session: ObservableObject {
     /// the replacement's handle.
     private var streamGeneration = 0
     private var runtimeGeneration = 0
+    private var instanceLookup = 0
+    private var instancePollTask: Task<Void, Never>?
     /// Bumped as each Live-call lookup starts. Only the newest one may write
     /// its answer: an older one still out (from before a reconnect, or from
     /// a computer this phone left and came back to) is not newer than it.
@@ -849,6 +852,9 @@ final class Session: ObservableObject {
         resetCredentialEntry()
         runtimeGeneration += 1
         steeringInstanceIds = []
+        instances = []
+        instancePollTask?.cancel()
+        instancePollTask = nil
         streamGeneration += 1
         streamTask?.cancel()
         streamTask = nil
@@ -956,6 +962,9 @@ final class Session: ObservableObject {
     /// a known point instead of wherever the socket happened to die.
     func disconnect() {
         resetCredentialEntry()
+        instanceLookup += 1
+        instancePollTask?.cancel()
+        instancePollTask = nil
         streamTask?.cancel()
         streamTask = nil
         endpointRefreshTask?.cancel()
@@ -1058,6 +1067,8 @@ final class Session: ObservableObject {
                         if !resumed {
                             try await hydrate(using: client)
                             state.resetCursor(cursor)
+                        } else {
+                            Task { [weak self] in await self?.refreshInstances(using: client) }
                         }
                         status = .live
                         // Remember what actually carried the stream for
@@ -1108,6 +1119,12 @@ final class Session: ObservableObject {
         var updated = state
         updated.applyBatch(batch)
         state = updated
+        if batch.contains(where: {
+            if case let .message(_, message) = $0.frame { return isFailedTurn(message) }
+            return false
+        }), let client {
+            Task { [weak self] in await self?.refreshInstances(using: client) }
+        }
         for frame in batch {
             if case let .runtime(event) = frame.frame,
                ["turn.completed", "runtime.error", "request.opened", "request.resolved", "item.completed"].contains(event.type) {
@@ -1136,12 +1153,7 @@ final class Session: ObservableObject {
             log.info("hydrated \(snapshot.fleet.bots.count, privacy: .public) bots, \(snapshot.fleet.groups.count, privacy: .public) rooms")
             NotificationCoordinator.shared.setBadge(state.unreadCount)
             // Wording must not delay hydration or the stream's cursor commit.
-            let runtime = runtimeGeneration
-            Task { [weak self] in
-                let engines = (try? await client.instances()) ?? []
-                guard let self, self.runtimeGeneration == runtime else { return }
-                self.steeringInstanceIds = Set(engines.filter { $0.capabilities?.queueing == true }.map(\.instanceId))
-            }
+            Task { [weak self] in await self?.refreshInstances(using: client) }
             // Nor must the line: run() waits for this hydrate before it folds
             // another frame, so awaiting the lookup here held the whole
             // stream behind one more request (up to its 20 s timeout).
@@ -1149,6 +1161,33 @@ final class Session: ObservableObject {
             return
         }
         throw APIError.status(code: 409, message: "Conversations changed while loading. Please try opening this notification again.")
+    }
+
+    private func refreshInstances(using client: CompanionClient) async {
+        let runtime = runtimeGeneration
+        instanceLookup += 1
+        let lookup = instanceLookup
+        guard let engines = try? await client.instances(),
+              runtimeGeneration == runtime, instanceLookup == lookup,
+              self.client?.connection.id == client.connection.id else { return }
+        instances = engines
+        steeringInstanceIds = Set(engines.filter { $0.capabilities?.queueing == true }.map(\.instanceId))
+        if engines.contains(where: { $0.snapshot.isAvailable && $0.snapshot.authenticated == false }) {
+            if instancePollTask == nil {
+                instancePollTask = Task { [weak self] in
+                    while !Task.isCancelled {
+                        try? await Task.sleep(for: .seconds(30))
+                        guard !Task.isCancelled, let self else { break }
+                        await self.refreshInstances(using: client)
+                        if !self.instances.contains(where: { $0.snapshot.isAvailable && $0.snapshot.authenticated == false }) { break }
+                    }
+                    self?.instancePollTask = nil
+                }
+            }
+        } else {
+            instancePollTask?.cancel()
+            instancePollTask = nil
+        }
     }
 
     // MARK: - Which address to dial

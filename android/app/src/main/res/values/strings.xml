@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="mobile_engine_signed_out_preview">%1$s isn\'t signed in</string>
+    <string name="mobile_engine_signed_out">%1$s isn\'t signed in on your computer. Sign in there under Settings → Engines, then send again.</string>
     <string name="app_name" translatable="false">MausBot</string>
     <string name="notification_channel_blocking">Approvals and questions</string>
     <string name="notification_channel_blocking_desc">Time-sensitive prompts that need an answer</string>
