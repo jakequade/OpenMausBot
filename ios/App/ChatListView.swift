@@ -829,7 +829,7 @@ struct ChatListView: View {
             } else {
                 signedOut = nil
             }
-            ChatSummary(
+            return ChatSummary(
                 chat: summary.chat,
                 preview: signedOut.map { signedOutCopy($0, preview: true) } ?? preview,
                 lastActivity: summary.lastActivity,

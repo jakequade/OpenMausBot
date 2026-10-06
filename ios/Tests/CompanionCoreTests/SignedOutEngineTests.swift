@@ -8,7 +8,7 @@ final class SignedOutEngineTests: XCTestCase {
         let fleet = try JSONDecoder().decode(Fleet.self, from: Data(contentsOf: url))
         var bot = try XCTUnwrap(fleet.bots.first)
         bot.modelSelection = ModelSelection(instanceId: "claude", model: "m")
-        var room = try XCTUnwrap(fleet.groups.first)
+        let room = try XCTUnwrap(fleet.groups.first)
         let engine = try JSONDecoder().decode(Instance.self, from: Data(#"{"instanceId":"claude","driverKind":"claudeAgent","displayName":"Claude","snapshot":{"state":"available","authenticated":false},"install":{},"models":{"default":"m","options":[]}}"#.utf8))
         var state = CompanionState()
         state.bots = [bot]
