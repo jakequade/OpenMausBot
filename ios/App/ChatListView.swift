@@ -813,13 +813,21 @@ struct ChatListView: View {
             return all
         }
         previewCache.keepOnly(Set(all.map(\.chat.threadId)))
+        let hasSignedOutEngine = session.instances.contains { $0.snapshot.isAvailable && $0.snapshot.authenticated == false }
         return all.map { summary in
             let preview = previewCache.preview(forThread: summary.chat.threadId, in: state, detail: activity)
-            let last = state.visibleTranscript(forThread: summary.chat.threadId).last { $0.kind != .digest }
-            let signedOut = last.flatMap {
-                preview == $0.tool?.label
-                    ? signedOutEngine(for: summary.chat, message: $0, in: state, instances: session.instances)
-                    : nil
+            guard hasSignedOutEngine else {
+                return ChatSummary(chat: summary.chat, preview: preview, lastActivity: summary.lastActivity, pinned: summary.pinned)
+            }
+            let rows = transcriptRows(
+                state.visibleTranscript(forThread: summary.chat.threadId).filter { $0.kind != .digest },
+                detail: activity
+            )
+            let signedOut: Instance?
+            if case let .message(message)? = rows.last, preview == message.tool?.label {
+                signedOut = signedOutEngine(for: summary.chat, message: message, in: state, instances: session.instances)
+            } else {
+                signedOut = nil
             }
             ChatSummary(
                 chat: summary.chat,
