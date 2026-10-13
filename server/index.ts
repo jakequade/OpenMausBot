@@ -21842,6 +21842,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
 };
 
 const server = createServer(handleRequest);
+server.on("clientError", (error: any, socket) => console.error(`[diag clientError] ${new Date().toISOString()} ${error?.code} ${error?.message} bytes=${socket.bytesRead}`));
+server.on("connection", (socket) => socket.on("error", (error: any) => console.error(`[diag socket error] ${new Date().toISOString()} ${error?.code}`)));
+process.on("exit", (code) => console.error(`[diag exit] ${code}`));
 desktopViewer.attach(server, handleRequest);
 
 calendarCalls.start();
